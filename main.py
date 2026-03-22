@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
 Lead Generation & Outreach System
-Replace cold calling with automated emails and texts.
+Replace cold calling with automated email outreach.
 
 Quick Start:
     python main.py setup          # First-time setup
     python main.py find           # Find new leads
     python main.py email          # Send emails to leads
-    python main.py sms            # Send texts to leads
     python main.py followup       # Send follow-up emails
     python main.py pipeline       # View your pipeline
     python main.py stats          # View campaign stats
@@ -37,7 +36,6 @@ from modules.lead_finder import (
     find_email_with_hunter,
 )
 from modules.email_outreach import send_campaign, get_leads_due_for_followup
-from modules.sms_outreach import send_sms_campaign, SMS_TEMPLATES
 from modules.tracker import (
     show_pipeline,
     show_stats,
@@ -342,53 +340,6 @@ def cmd_followup():
 
 
 # ─────────────────────────────────────────────
-# SMS OUTREACH
-# ─────────────────────────────────────────────
-
-def cmd_sms():
-    sender = load_sender()
-    if not sender:
-        print("[!] Run 'python main.py setup' first")
-        return
-
-    leads = load_leads(LEADS_FILE)
-    leads_with_phone = [l for l in leads if l.get("phone") and l.get("status") in ("new", "contacted")]
-
-    if not leads_with_phone:
-        print("[!] No leads with phone numbers. Make sure your leads have phone numbers.")
-        return
-
-    print(f"\n[+] {len(leads_with_phone)} leads with phone numbers")
-    print("\nChoose SMS template:")
-    for key, template in SMS_TEMPLATES.items():
-        print(f"  {key}: {template[:60]}...")
-
-    choice = input("\nTemplate (default='initial'): ").strip() or "initial"
-
-    if choice not in SMS_TEMPLATES:
-        print(f"[!] Invalid template. Choose from: {', '.join(SMS_TEMPLATES.keys())}")
-        return
-
-    # Preview
-    from modules.sms_outreach import build_sms_context
-    preview = build_sms_context(leads_with_phone[0], sender)
-    print(f"\n--- PREVIEW ---")
-    print(f"To: {leads_with_phone[0].get('phone')}")
-    print(f"Message ({len(preview)} chars): {preview}")
-
-    confirm = input(f"\nSend to {len(leads_with_phone)} leads? (yes/no/dry): ").strip().lower()
-    dry = confirm == "dry"
-    if confirm not in ("yes", "dry"):
-        print("Cancelled.")
-        return
-
-    updated = send_sms_campaign(leads_with_phone, choice, sender, delay_seconds=15, dry_run=dry)
-
-    with open(LEADS_FILE, "w") as f:
-        json.dump(leads, f, indent=2)
-
-
-# ─────────────────────────────────────────────
 # UPDATE STATUS
 # ─────────────────────────────────────────────
 
@@ -410,7 +361,6 @@ COMMANDS = {
     "find": cmd_find,
     "email": cmd_email,
     "followup": cmd_followup,
-    "sms": cmd_sms,
     "pipeline": lambda: show_pipeline(LEADS_FILE),
     "stats": lambda: show_stats(LEADS_FILE),
     "status": cmd_status,
@@ -423,7 +373,7 @@ def print_help():
     print("""
 ╔══════════════════════════════════════════════════════════╗
 ║         LEAD GENERATION & OUTREACH SYSTEM                ║
-║     Replace cold calling with email + text outreach      ║
+║         Replace cold calling with email outreach         ║
 ╚══════════════════════════════════════════════════════════╝
 
 Commands:
@@ -431,7 +381,6 @@ Commands:
   python main.py find         Find new leads (Google Maps, Apollo, CSV)
   python main.py email        Email new leads
   python main.py followup     Send follow-up emails to existing leads
-  python main.py sms          Text leads via Twilio
   python main.py pipeline     View your full pipeline
   python main.py stats        View campaign statistics
   python main.py status       Mark a lead as replied/converted/etc
@@ -442,10 +391,9 @@ Workflow (no cold calling needed):
   1. python main.py setup     ← do this once
   2. python main.py find      ← find leads in your niche/city
   3. python main.py email     ← send first emails
-  4. python main.py sms       ← text them too (2-3x better response)
-  5. python main.py followup  ← auto follow-up after 3 days
-  6. python main.py pipeline  ← see who replied
-  7. python main.py status    ← mark replied/converted leads
+  4. python main.py followup  ← auto follow-up after 3 days
+  5. python main.py pipeline  ← see who replied
+  6. python main.py status    ← mark replied/converted leads
 """)
 
 
