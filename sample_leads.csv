@@ -1,0 +1,4 @@
+name,first_name,last_name,email,phone,company,business_type,location,website,notes
+John Smith,John,Smith,john@smithplumbing.com,+17135551234,Smith Plumbing,plumber,Houston TX,smithplumbing.com,Found on Google Maps
+Maria Garcia,Maria,Garcia,maria@garciaroof.com,+17135555678,Garcia Roofing,roofer,Houston TX,garciaroof.com,
+Dave Johnson,Dave,Johnson,dave@johnsonelectric.com,,Johnson Electric,electrician,Houston TX,,No phone on file
