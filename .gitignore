@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+*.env
+
+# Data files (runtime-generated)
+data/leads.json
+data/sender.json
+data/positions.json
+data/watchlist.json
+data/last_scan.json
+data/trade_log.json
+data/paper_trade_log.json
+data/live_trade_log.json
+data/daily_stats.json
+data/risk_events.json
+data/kill_switch.json
+data/signal_weights.json
+data/signal_weight_history.json
+data/regime_log.json
+data/strategy_metrics.json
+data/backtest_results/
+
+# OS
+.DS_Store
+Thumbs.db
