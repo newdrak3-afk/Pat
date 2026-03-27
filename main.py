@@ -368,75 +368,6 @@ def cmd_status():
 # MAIN
 # ─────────────────────────────────────────────
 
-COMMANDS = {
-    "setup": setup,
-    "find": cmd_find,
-    "email": cmd_email,
-    "followup": cmd_followup,
-    "pipeline": lambda: show_pipeline(LEADS_FILE),
-    "stats": lambda: show_stats(LEADS_FILE),
-    "status": cmd_status,
-    "import-csv": lambda: import_leads_from_csv(input("CSV file path: ").strip()),
-    "export": lambda: export_to_csv(LEADS_FILE),
-    # ── Trading bot ──
-    "trade-setup": cmd_trade_setup,
-    "scan": cmd_scan,
-    "trade": cmd_trade,
-    "positions": cmd_positions,
-    "close": cmd_close,
-    "backtest": cmd_backtest,
-    "performance": cmd_performance,
-    "watchlist": cmd_watchlist,
-    "kill": cmd_kill,
-    "resume": cmd_resume,
-    "daily": cmd_daily,
-}
-
-
-def print_help():
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║    LEAD GENERATION + OPTIONS/FOREX TRADING BOT               ║
-╚══════════════════════════════════════════════════════════════╝
-
-── LEAD GENERATION ───────────────────────────────────────────
-  python main.py setup        First-time setup (run this first!)
-  python main.py find         Find new leads (Google Maps, Apollo, CSV)
-  python main.py email        Email new leads
-  python main.py followup     Send follow-up emails
-  python main.py pipeline     View your full lead pipeline
-  python main.py stats        View campaign statistics
-  python main.py status       Mark a lead as replied/converted/etc
-  python main.py import-csv   Import leads from a CSV file
-  python main.py export       Export leads to CSV
-
-── TRADING BOT ───────────────────────────────────────────────
-  python main.py trade-setup  Configure API keys & trading settings
-  python main.py scan         Scan watchlist for high-confidence signals
-  python main.py trade        Pick a signal and place a paper/live trade
-  python main.py positions    View open positions with live P&L
-  python main.py close        Close a position manually
-  python main.py backtest     Backtest strategy on historical data
-  python main.py performance  Win rate report + what the bot learned
-  python main.py watchlist    Add/remove/view tickers to scan
-  python main.py kill         Emergency stop — halt all trading
-  python main.py resume       Re-enable trading after kill/pause
-  python main.py daily        Today's trading summary
-
-  Set MARKET_MODE=options|forex|both in .env to choose markets.
-  Set TRADIER_SANDBOX=true for paper trading (default).
-""")
-
-
-if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
-
-    if cmd == "help" or cmd not in COMMANDS:
-        print_help()
-    else:
-        COMMANDS[cmd]()
-
-
 # ─────────────────────────────────────────────────────────────
 # TRADING BOT COMMANDS
 # ─────────────────────────────────────────────────────────────
@@ -914,3 +845,76 @@ def cmd_daily():
         send = input("\nSend summary to Telegram? (yes/no): ").strip().lower()
         if send == "yes":
             telegram.send_daily_summary({**summary, "daily_pnl": pnl})
+
+
+# ─────────────────────────────────────────────
+# COMMAND REGISTRY + ENTRY POINT
+# ─────────────────────────────────────────────
+
+COMMANDS = {
+    "setup": setup,
+    "find": cmd_find,
+    "email": cmd_email,
+    "followup": cmd_followup,
+    "pipeline": lambda: show_pipeline(LEADS_FILE),
+    "stats": lambda: show_stats(LEADS_FILE),
+    "status": cmd_status,
+    "import-csv": lambda: import_leads_from_csv(input("CSV file path: ").strip()),
+    "export": lambda: export_to_csv(LEADS_FILE),
+    # ── Trading bot ──
+    "trade-setup": cmd_trade_setup,
+    "scan": cmd_scan,
+    "trade": cmd_trade,
+    "positions": cmd_positions,
+    "close": cmd_close,
+    "backtest": cmd_backtest,
+    "performance": cmd_performance,
+    "watchlist": cmd_watchlist,
+    "kill": cmd_kill,
+    "resume": cmd_resume,
+    "daily": cmd_daily,
+}
+
+
+def print_help():
+    print("""
+╔══════════════════════════════════════════════════════════════╗
+║    LEAD GENERATION + OPTIONS/FOREX TRADING BOT               ║
+╚══════════════════════════════════════════════════════════════╝
+
+── LEAD GENERATION ───────────────────────────────────────────
+  python main.py setup        First-time setup (run this first!)
+  python main.py find         Find new leads (Google Maps, Apollo, CSV)
+  python main.py email        Email new leads
+  python main.py followup     Send follow-up emails
+  python main.py pipeline     View your full lead pipeline
+  python main.py stats        View campaign statistics
+  python main.py status       Mark a lead as replied/converted/etc
+  python main.py import-csv   Import leads from a CSV file
+  python main.py export       Export leads to CSV
+
+── TRADING BOT ───────────────────────────────────────────────
+  python main.py trade-setup  Configure API keys & trading settings
+  python main.py scan         Scan watchlist for high-confidence signals
+  python main.py trade        Pick a signal and place a paper/live trade
+  python main.py positions    View open positions with live P&L
+  python main.py close        Close a position manually
+  python main.py backtest     Backtest strategy on historical data
+  python main.py performance  Win rate report + what the bot learned
+  python main.py watchlist    Add/remove/view tickers to scan
+  python main.py kill         Emergency stop — halt all trading
+  python main.py resume       Re-enable trading after kill/pause
+  python main.py daily        Today's trading summary
+
+  Set MARKET_MODE=options|forex|both in .env to choose markets.
+  Set TRADIER_SANDBOX=true for paper trading (default).
+""")
+
+
+if __name__ == "__main__":
+    cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
+
+    if cmd == "help" or cmd not in COMMANDS:
+        print_help()
+    else:
+        COMMANDS[cmd]()
