@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Multi-Agent Trading System — Entry Point
+Multi-Agent Trading System v2 — Entry Point
 
 Commands:
     python trading_main.py scan          # Run market scanner only
     python trading_main.py research      # Scan + research
     python trading_main.py run           # Run one full cycle
     python trading_main.py live          # Run continuously (dry run)
+    python trading_main.py auto          # Auto-trade forex on OANDA practice
+    python trading_main.py status        # Show auto trader status
     python trading_main.py dashboard     # Show system dashboard
     python trading_main.py resolve       # Resolve a trade (win/loss)
     python trading_main.py lessons       # View lessons learned
     python trading_main.py config        # Show current config
-    python trading_main.py backtest      # Run a simulated backtest
+    python trading_main.py backtest      # Run historical backtest
+    python trading_main.py settings      # View/change feature toggles
+    python trading_main.py report        # Full system report with DB stats
+    python trading_main.py montecarlo    # Run Monte Carlo risk simulation
 """
 
 import json
@@ -49,7 +54,6 @@ def cmd_research(orch: Orchestrator):
     markets = orch.scanner.scan()
     print(orch.scanner.get_summary(markets))
 
-    # Research top 5 by volume
     top = sorted(markets, key=lambda m: m.volume_24h, reverse=True)[:5]
     if not top:
         print("No markets to research.")
@@ -115,32 +119,105 @@ def cmd_config(orch: Orchestrator):
 
 
 def cmd_backtest(orch: Orchestrator):
-    """Run a simple backtest simulation."""
-    print("\n--- BACKTEST MODE ---")
-    print("Running 5 simulated cycles...\n")
+    """Run a historical backtest using the backtester engine."""
+    from trading.backtester import BacktestEngine
+    from trading.brokers.oanda import OandaBroker
 
-    orch.dry_run = True
-    total_trades = 0
-    total_blocked = 0
+    print("\n--- BACKTEST ENGINE ---")
 
-    for i in range(5):
-        print(f"\n--- Cycle {i+1}/5 ---")
-        summary = orch.run_cycle()
-        total_trades += summary["trades_approved"]
-        total_blocked += summary["trades_blocked"]
+    broker = OandaBroker()
+    if not broker.connect():
+        print("[!] Could not connect to OANDA for historical data")
+        print("Running demo backtest with simulated data...\n")
 
-    print(f"\n--- BACKTEST COMPLETE ---")
-    print(f"Total trades: {total_trades}")
-    print(f"Total blocked: {total_blocked}")
-    print(orch.get_dashboard())
+        # Demo with random candles
+        import numpy as np
+        np.random.seed(42)
+        price = 1.1000
+        candles = []
+        for i in range(500):
+            change = np.random.normal(0, 0.0010)
+            o = price
+            c = price + change
+            h = max(o, c) + abs(np.random.normal(0, 0.0005))
+            l = min(o, c) - abs(np.random.normal(0, 0.0005))
+            candles.append({
+                "time": f"2024-01-{(i//24)+1:02d}T{i%24:02d}:00:00Z",
+                "open": o, "high": h, "low": l, "close": c,
+                "volume": int(np.random.uniform(100, 1000)),
+            })
+            price = c
+
+        # Generate some test signals
+        signals = []
+        for i in range(20, 480, 25):
+            side = "buy" if candles[i]["close"] > candles[i-5]["close"] else "sell"
+            signals.append({
+                "bar_index": i,
+                "symbol": "EUR_USD",
+                "side": side,
+                "sl_pips": 30,
+                "tp_pips": 45,
+                "confidence": 0.6,
+            })
+
+        engine = BacktestEngine()
+        result = engine.run_backtest(candles, signals)
+        print(BacktestEngine.print_report(result))
+        return
+
+    print("Fetching 1000 H1 candles for EUR_USD...")
+    symbol = "EUR_USD"
+    candles = broker.get_candles(symbol, "H1", 1000)
+
+    if not candles or len(candles) < 100:
+        print("[!] Not enough candle data")
+        return
+
+    # Generate signals using the forex scanner logic
+    from trading.forex_scanner import ForexScanner
+    scanner = ForexScanner(broker)
+
+    # Simple signal generation from candles
+    signals = []
+    for i in range(50, len(candles) - 10, 20):
+        subset = candles[max(0, i-100):i]
+        closes = [c["close"] for c in subset]
+        if len(closes) < 20:
+            continue
+
+        sma20 = sum(closes[-20:]) / 20
+        current = closes[-1]
+        side = "buy" if current > sma20 else "sell"
+
+        signals.append({
+            "bar_index": i,
+            "symbol": symbol,
+            "side": side,
+            "sl_pips": 30,
+            "tp_pips": 45,
+            "confidence": 0.55,
+        })
+
+    if not signals:
+        print("[!] No signals generated")
+        return
+
+    print(f"Generated {len(signals)} signals over {len(candles)} bars\n")
+
+    engine = BacktestEngine()
+    result = engine.run_backtest(candles, signals)
+    print(BacktestEngine.print_report(result))
 
 
 def cmd_auto(orch: Orchestrator):
     """Run auto-trader on OANDA practice account."""
     from trading.auto_trader import AutoTrader
 
-    print("\n--- AUTO TRADER (OANDA Practice) ---")
-    print("This will trade REAL forex on your PRACTICE account.")
+    print("\n--- AUTO TRADER v2 (OANDA Practice) ---")
+    print("Enhanced with: regime detection, drawdown guard,")
+    print("drift detector, portfolio manager, calibration,")
+    print("slippage model, data quality checks, SQLite logging")
     print("No real money. The bot learns from every loss.\n")
 
     trader = AutoTrader(orch.config)
@@ -148,52 +225,161 @@ def cmd_auto(orch: Orchestrator):
     trader.start(scan_interval=orch.config.scan_interval_seconds)
 
 
-def cmd_status_auto(orch: Orchestrator):
+def cmd_status(orch: Orchestrator):
     """Show auto trader status."""
     from trading.auto_trader import AutoTrader
     trader = AutoTrader(orch.config)
     if trader.oanda.connect():
-        print(trader.get_status())
+        print(trader.get_full_report())
     else:
         print("[!] Could not connect to OANDA")
+        # Still show what we can from local state
+        print(trader.get_status())
+
+
+def cmd_settings(orch: Orchestrator):
+    """View or change feature toggles."""
+    from trading.settings import Settings
+
+    settings = Settings()
+
+    if len(sys.argv) > 2:
+        # Set a value: python trading_main.py settings key=value
+        for arg in sys.argv[2:]:
+            if "=" in arg:
+                key, value = arg.split("=", 1)
+                # Parse value
+                if value.lower() in ("true", "on", "yes", "1"):
+                    parsed = True
+                elif value.lower() in ("false", "off", "no", "0"):
+                    parsed = False
+                elif value.isdigit():
+                    parsed = int(value)
+                else:
+                    parsed = value
+
+                if settings.set(key, parsed):
+                    print(f"  Set {key} = {parsed}")
+                else:
+                    print(f"  [!] Unknown setting: {key}")
+            else:
+                print(f"  [!] Use format: key=value")
+    else:
+        print(settings.get_status())
+
+
+def cmd_report(orch: Orchestrator):
+    """Full system report with DB stats."""
+    from trading.auto_trader import AutoTrader
+    from trading.trade_db import TradeDB
+    from trading.drawdown_guard import DrawdownGuard
+    from trading.drift_detector import DriftDetector
+    from trading.calibration import CalibrationLayer
+
+    db = TradeDB()
+    drawdown = DrawdownGuard()
+    drift = DriftDetector()
+    calibration = CalibrationLayer()
+
+    print("\n╔══════════════════════════════════════╗")
+    print("║     FULL SYSTEM REPORT               ║")
+    print("╚══════════════════════════════════════╝\n")
+
+    # DB summary
+    summary = db.get_performance_summary()
+    if summary:
+        print("  ── Trade Database ──")
+        print(f"  Total Trades:  {summary.get('total_trades', 0)}")
+        print(f"  Win Rate:      {summary.get('win_rate', 0):.0%}")
+        print(f"  Total PnL:     ${summary.get('total_pnl', 0):+,.2f}")
+        print()
+
+    # Symbol breakdown
+    pnl_by_symbol = db.get_pnl_by_symbol()
+    if pnl_by_symbol:
+        print("  ── PnL by Symbol ──")
+        for sym, pnl in sorted(pnl_by_symbol.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {sym:12s}  ${pnl:+,.2f}")
+        print()
+
+    # Drawdown
+    print(drawdown.get_status())
+    print()
+
+    # Drift
+    print(drift.get_status())
+    print()
+
+    # Calibration
+    cal_stats = calibration.get_calibration_stats()
+    if cal_stats.get("total_samples", 0) > 0:
+        print("  ── Calibration ──")
+        print(f"  Samples:       {cal_stats['total_samples']}")
+        print(f"  Brier Score:   {cal_stats.get('brier_score', 0):.4f}")
+        print(f"  Overconfident: {'Yes' if calibration.is_overconfident() else 'No'}")
+        print()
+
+
+def cmd_montecarlo(orch: Orchestrator):
+    """Run Monte Carlo risk simulation."""
+    from trading.monte_carlo import MonteCarloSimulator
+    from trading.trade_db import TradeDB
+
+    db = TradeDB()
+    print("\n--- MONTE CARLO SIMULATION ---\n")
+
+    # Get historical PnLs from DB
+    trades = db.get_all_trades()
+    pnls = [t.get("pnl", 0) for t in trades if t.get("pnl", 0) != 0]
+
+    if len(pnls) < 5:
+        print("Not enough trade history. Using demo data...\n")
+        import numpy as np
+        np.random.seed(42)
+        pnls = list(np.random.normal(5, 20, 50))  # avg $5 win, $20 std dev
+
+    sim = MonteCarloSimulator()
+    result = sim.simulate(pnls, num_simulations=1000, num_trades=200)
+    print(sim.print_report(result))
 
 
 def print_help():
     print("""
 ╔══════════════════════════════════════════════════════════════╗
-║          MULTI-AGENT TRADING SYSTEM                          ║
-║          Scan → Research → Predict → Trade → Learn           ║
+║          MULTI-AGENT TRADING SYSTEM v2                       ║
+║          Scan → Guard → Trade → Monitor → Learn              ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Commands:
-  python trading_main.py scan        Scan 300+ markets, filter & flag
-  python trading_main.py research    Scan + parallel research (Twitter/Reddit/RSS)
-  python trading_main.py run         Run one full trading cycle
-  python trading_main.py live        Run continuously (dry run, Ctrl+C to stop)
-  python trading_main.py auto        Auto-trade forex on OANDA practice account
-  python trading_main.py status      Show auto trader stats (wins/losses/PnL)
-  python trading_main.py dashboard   View system dashboard & stats
-  python trading_main.py resolve     Resolve a trade as win/loss
-  python trading_main.py lessons     View lessons learned from losses
-  python trading_main.py config      Show current configuration
-  python trading_main.py backtest    Run simulated backtest (5 cycles)
+  scan        Scan 300+ markets, filter & flag
+  research    Scan + parallel research (Twitter/Reddit/RSS)
+  run         Run one full trading cycle
+  live        Run continuously (dry run, Ctrl+C to stop)
+  auto        Auto-trade forex on OANDA (with all guards)
+  status      Show auto trader stats (wins/losses/PnL)
+  dashboard   View system dashboard & stats
+  resolve     Resolve a trade as win/loss
+  lessons     View lessons learned from losses
+  config      Show current configuration
+  backtest    Run historical backtest simulation
+  settings    View/change feature toggles
+  report      Full system report (DB + guards + calibration)
+  montecarlo  Run Monte Carlo risk simulation
 
-Agents:
-  1. Scan Agent      — Filters markets by liquidity, volume, spread
-  2. Research Agent   — Scrapes Twitter, Reddit, RSS in parallel
-  3. Prediction Agent — XGBoost + LLM probability calibration
-  4. Risk Manager     — Kelly sizing, daily limits, position limits
-  5. Loss Analyzer    — Post-loss analysis, generates corrective rules
+Settings:
+  settings scanning_enabled=false    Turn off scanning
+  settings auto_trading_enabled=true Turn on auto-trading
+  settings max_trades_per_cycle=2    Limit trades per scan
 
-Brokers:
-  - OANDA  — Forex (auto-trade on practice account)
-  - Robinhood — Stocks & options (alert-only mode)
-
-Setup:
-  1. Copy .env.example and add your API keys
-  2. pip install -r requirements.txt
-  3. python trading_main.py scan   (test the scanner)
-  4. python trading_main.py auto   (auto-trade forex on practice)
+Guards (all auto-enabled):
+  1. Regime Detector  — Skip unfavorable market conditions
+  2. Data Quality     — Reject bad/stale candle data
+  3. Portfolio Mgr    — Cap currency exposure
+  4. Drawdown Guard   — Hard stop on max drawdown
+  5. Drift Detector   — Pause if strategy degrading
+  6. Slippage Model   — Account for real execution costs
+  7. Calibration      — Fix overconfident predictions
+  8. Risk Manager     — Kelly sizing, daily limits
 """)
 
 
@@ -203,12 +389,15 @@ COMMANDS = {
     "run": cmd_run,
     "live": cmd_live,
     "auto": cmd_auto,
-    "status": cmd_status_auto,
+    "status": cmd_status,
     "dashboard": cmd_dashboard,
     "resolve": cmd_resolve,
     "lessons": cmd_lessons,
     "config": cmd_config,
     "backtest": cmd_backtest,
+    "settings": cmd_settings,
+    "report": cmd_report,
+    "montecarlo": cmd_montecarlo,
 }
 
 
