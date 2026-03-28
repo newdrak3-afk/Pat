@@ -55,6 +55,7 @@ class TelegramBot:
         # These get set by the auto_trader after init
         self._settings = None
         self._oanda = None
+        self._scanner = None
         self._drawdown = None
         self._drift = None
         self._portfolio = None
@@ -71,6 +72,7 @@ class TelegramBot:
         self,
         settings,
         oanda=None,
+        scanner=None,
         drawdown=None,
         drift=None,
         portfolio=None,
@@ -83,6 +85,7 @@ class TelegramBot:
         """Connect all system components so the bot can control them."""
         self._settings = settings
         self._oanda = oanda
+        self._scanner = scanner
         self._drawdown = drawdown
         self._drift = drift
         self._portfolio = portfolio
@@ -183,6 +186,7 @@ class TelegramBot:
             "/resume": self._cmd_resume,
             "/guards": self._cmd_guards,
             "/set": self._cmd_set,
+            "/crypto": self._cmd_crypto,
         }
 
         handler = handlers.get(cmd)
@@ -216,6 +220,7 @@ class TelegramBot:
             "<b>Controls:</b>\n"
             "/scan — Toggle scanning ON/OFF\n"
             "/trade — Toggle auto-trading ON/OFF\n"
+            "/crypto — Scan crypto NOW (works weekends)\n"
             "/pause — Pause everything\n"
             "/resume — Resume all\n"
             "/set key value — Change a setting\n\n"
@@ -451,6 +456,60 @@ class TelegramBot:
             lines.append(f"  Calibrate: {'ON' if t.calibration_enabled else 'OFF'}")
 
         self._send("\n".join(lines))
+
+    def _cmd_crypto(self, args):
+        """Run a crypto scan right now (works on weekends)."""
+        if not self._scanner:
+            self._send("Scanner not initialized. Is OANDA connected?")
+            return
+
+        self._send("Scanning crypto pairs... (BTC, ETH, LTC, XRP...)")
+
+        try:
+            from trading.brokers.oanda import CRYPTO_PAIRS
+
+            signals = []
+            for symbol in CRYPTO_PAIRS:
+                try:
+                    signal = self._scanner._analyze_pair(symbol)
+                    if signal:
+                        signals.append(signal)
+                except Exception as e:
+                    logger.debug(f"Error scanning {symbol}: {e}")
+                    continue
+
+            signals.sort(key=lambda x: x["confidence"], reverse=True)
+
+            if not signals:
+                self._send(
+                    "<b>CRYPTO SCAN</b>\n\n"
+                    f"Scanned {len(CRYPTO_PAIRS)} crypto pairs.\n"
+                    "No signals found right now.\n\n"
+                    "This means no pair hit the minimum confidence threshold."
+                )
+                return
+
+            lines = [f"<b>CRYPTO SCAN — {len(signals)} signals</b>\n"]
+            for s in signals[:5]:
+                pair = s["symbol"].replace("_", "/")
+                side = "BUY" if s["side"] == "buy" else "SELL"
+                lines.append(
+                    f"\n<b>{pair} — {side}</b>\n"
+                    f"Confidence: {s['confidence']*100:.0f}%\n"
+                    f"Entry: {s['entry']:.2f}\n"
+                    f"SL: {s['stop_loss']:.2f} | TP: {s['take_profit']:.2f}\n"
+                    f"{s['reasoning'][:150]}"
+                )
+
+            if self._settings and self._settings.toggles.auto_trading_enabled:
+                lines.append("\nAuto-trading is ON — trades will be placed automatically.")
+            else:
+                lines.append("\nAuto-trading is OFF — these are alerts only.\nSend /trade on to enable.")
+
+            self._send("\n".join(lines))
+
+        except Exception as e:
+            self._send(f"Crypto scan error: {str(e)[:200]}")
 
     def _cmd_set(self, args):
         """Set a specific setting. Usage: /set key value"""

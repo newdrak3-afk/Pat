@@ -29,6 +29,16 @@ FOREX_PAIRS = [
     "EUR_NZD", "GBP_NZD", "GBP_CAD", "EUR_SEK",
 ]
 
+# Crypto pairs — trade 24/7 including weekends
+CRYPTO_PAIRS = [
+    "BTC_USD", "ETH_USD", "LTC_USD", "BCH_USD",
+    "XRP_USD", "BTC_EUR", "ETH_EUR", "BTC_GBP",
+    "BTC_JPY", "ETH_GBP",
+]
+
+# All tradeable pairs
+ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
+
 
 class OandaBroker(BaseBroker):
     """

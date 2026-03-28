@@ -159,6 +159,7 @@ class AutoTrader:
         self.telegram_bot.connect(
             settings=self.settings,
             oanda=self.oanda,
+            scanner=self.scanner,
             drawdown=self.drawdown,
             drift=self.drift,
             portfolio=self.portfolio,
@@ -194,7 +195,7 @@ class AutoTrader:
             if not self.settings.toggles.scanning_enabled:
                 logger.debug("Scanning disabled — waiting for /resume...")
                 try:
-                    time.sleep(scan_interval)
+                    time.sleep(10)  # Check every 10 sec so /resume responds fast
                 except KeyboardInterrupt:
                     logger.info("Shutting down...")
                     self.telegram_bot.stop()
@@ -427,14 +428,22 @@ class AutoTrader:
                 continue
 
             # ── EXECUTE: Place the trade ──
+            from trading.brokers.oanda import CRYPTO_PAIRS
             balance = self.oanda.get_account_balance()
             risk_amount = balance * self.config.risk.max_bet_pct
             sl_distance = abs(signal["entry"] - signal["stop_loss"])
+            is_crypto = signal["symbol"] in CRYPTO_PAIRS
+
             if sl_distance > 0:
                 units = int(risk_amount / sl_distance)
-                units = max(1, min(units, 10000))
+                if is_crypto:
+                    # Crypto: small units (fractions of BTC)
+                    units = max(1, min(units, 5))
+                else:
+                    # Forex: larger units
+                    units = max(1, min(units, 10000))
             else:
-                units = 1000
+                units = 1 if is_crypto else 1000
 
             result = self.oanda.place_order_with_stops(
                 symbol=signal["symbol"],
