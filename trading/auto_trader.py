@@ -43,6 +43,7 @@ from trading.drawdown_guard import DrawdownGuard
 from trading.drift_detector import DriftDetector
 from trading.slippage_model import SlippageModel
 from trading.calibration import CalibrationLayer
+from trading.telegram_bot import TelegramBot
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,9 @@ class AutoTrader:
         self.drift = DriftDetector()
         self.slippage = SlippageModel()
         self.calibration = CalibrationLayer()
+
+        # Telegram command bot (listens for /commands)
+        self.telegram_bot = TelegramBot()
 
         # State
         self._trades: list[dict] = []
@@ -153,6 +157,21 @@ class AutoTrader:
 
         # Initialize drawdown guard with current balance
         self.drawdown.update(balance)
+
+        # Start Telegram command listener
+        self.telegram_bot.connect(
+            settings=self.settings,
+            oanda=self.oanda,
+            drawdown=self.drawdown,
+            drift=self.drift,
+            portfolio=self.portfolio,
+            calibration=self.calibration,
+            db=self.db,
+            loss_analyzer=self.loss_analyzer,
+            get_status_fn=self.get_status,
+            get_report_fn=self.get_full_report,
+        )
+        self.telegram_bot.start()
 
         self.notifier.send_startup(balance, dry_run=not self.settings.toggles.auto_trading_enabled)
         logger.info(f"Auto trader v2 started — Balance: ${balance:.2f}")
