@@ -40,15 +40,15 @@ class FeatureToggles:
     # ─── AGENTS ───
     research_enabled: bool = True          # Run Twitter/Reddit/RSS research
     prediction_enabled: bool = True        # Run XGBoost + LLM predictions
-    regime_detection_enabled: bool = True  # Detect market regime before trading
-    calibration_enabled: bool = True       # Calibrate prediction probabilities
+    regime_detection_enabled: bool = False  # OFF for testing — blocks too much on weekends
+    calibration_enabled: bool = False      # OFF for testing — needs 20+ trades to calibrate
 
     # ─── RISK GUARDS ───
     drawdown_guard_enabled: bool = True    # Block trading on max drawdown
-    drift_detector_enabled: bool = True    # Pause if strategy is degrading
-    portfolio_manager_enabled: bool = True # Check currency exposure limits
-    slippage_model_enabled: bool = True    # Account for slippage costs
-    data_quality_check: bool = True        # Validate candle data before use
+    drift_detector_enabled: bool = False   # OFF for testing — enable after 20+ trades
+    portfolio_manager_enabled: bool = False # OFF for testing — enable after data collected
+    slippage_model_enabled: bool = False   # OFF for testing — enable for live trading
+    data_quality_check: bool = False       # OFF for testing — weekend data triggers false alarms
 
     # ─── TRADING PARAMS ───
     max_trades_per_cycle: int = 3          # Max new trades per scan cycle
