@@ -130,7 +130,7 @@ class ForexScanner:
         reasons = []
         side = None
 
-        # 1. MA Crossover
+        # 1. MA Crossover (strict — price crossed SMA20 on last bar)
         if sma_20 > sma_50 and closes_h1[-2] < sma_20 and current_price > sma_20:
             score += 0.2
             reasons.append("Price crossed above SMA20 (bullish)")
@@ -139,6 +139,17 @@ class ForexScanner:
             score += 0.2
             reasons.append("Price crossed below SMA20 (bearish)")
             side = "sell"
+
+        # 1b. MA Trend (relaxed — price is on one side of SMA20)
+        if side is None:
+            if current_price > sma_20 and sma_20 > sma_50:
+                score += 0.1
+                reasons.append("Above SMA20 > SMA50 (bullish trend)")
+                side = "buy"
+            elif current_price < sma_20 and sma_20 < sma_50:
+                score += 0.1
+                reasons.append("Below SMA20 < SMA50 (bearish trend)")
+                side = "sell"
 
         # 2. RSI
         if rsi < 30:
@@ -151,6 +162,12 @@ class ForexScanner:
             reasons.append(f"RSI overbought ({rsi:.0f})")
             if side is None:
                 side = "sell"
+        elif rsi < 40 and side == "buy":
+            score += 0.1
+            reasons.append(f"RSI leaning oversold ({rsi:.0f})")
+        elif rsi > 60 and side == "sell":
+            score += 0.1
+            reasons.append(f"RSI leaning overbought ({rsi:.0f})")
 
         # 3. MACD
         if macd > 0 and side == "buy":

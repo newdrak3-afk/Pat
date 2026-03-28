@@ -259,8 +259,9 @@ class AutoTrader:
 
         if not signals:
             logger.info("No signals found this cycle")
+            from trading.brokers.oanda import ALL_PAIRS
             self.notifier.send_scan_summary(
-                total_markets=28,
+                total_markets=len(ALL_PAIRS),
                 flagged=0,
                 predictions=0,
                 trades=0,
@@ -523,8 +524,9 @@ class AutoTrader:
                 )
 
         # Summary
+        from trading.brokers.oanda import ALL_PAIRS
         self.notifier.send_scan_summary(
-            total_markets=28,
+            total_markets=len(ALL_PAIRS),
             flagged=len(signals),
             predictions=len(signals),
             trades=trades_placed,
