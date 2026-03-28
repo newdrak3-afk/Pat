@@ -127,19 +127,16 @@ class AutoTrader:
         """
         Start the auto-trading loop.
 
+        Always starts the Telegram command bot first so you can
+        control the system from your phone even when scanning is off.
+
         Args:
             scan_interval: Seconds between scans (default 5 min)
         """
         # Use settings override if available
         scan_interval = self.settings.toggles.scan_interval_seconds or scan_interval
 
-        # Check if scanning is enabled
-        if not self.settings.toggles.scanning_enabled:
-            logger.info("Scanning is DISABLED in settings. Exiting.")
-            self.notifier.send_system_alert("Bot started but scanning is disabled. Use settings to enable.")
-            return
-
-        # Connect to OANDA
+        # Connect to OANDA first (needed for /balance, /positions, etc)
         logger.info("Connecting to OANDA...")
         if not self.oanda.connect():
             self.notifier.send_system_alert(
@@ -158,7 +155,7 @@ class AutoTrader:
         # Initialize drawdown guard with current balance
         self.drawdown.update(balance)
 
-        # Start Telegram command listener
+        # Start Telegram command listener FIRST (always runs)
         self.telegram_bot.connect(
             settings=self.settings,
             oanda=self.oanda,
@@ -179,12 +176,29 @@ class AutoTrader:
         logger.info(f"Auto-trading: {'ON' if self.settings.toggles.auto_trading_enabled else 'OFF (alerts only)'}")
         logger.info(self.settings.get_status())
 
+        if not self.settings.toggles.scanning_enabled:
+            logger.info("Scanning is OFF. Send /resume in Telegram to start.")
+            self.notifier.send_system_alert(
+                "Bot online. Scanning is OFF.\n"
+                "Send /resume to start scanning.\n"
+                "Send /help to see all commands."
+            )
+
+        # Main loop — always runs, checks settings each cycle
         while True:
-            # Re-check settings each cycle (allows live toggle)
+            # Re-check settings each cycle (allows live toggle from Telegram)
             self.settings = Settings()
+            # Keep telegram bot's settings reference updated
+            self.telegram_bot._settings = self.settings
+
             if not self.settings.toggles.scanning_enabled:
-                logger.info("Scanning disabled — sleeping...")
-                time.sleep(scan_interval)
+                logger.debug("Scanning disabled — waiting for /resume...")
+                try:
+                    time.sleep(scan_interval)
+                except KeyboardInterrupt:
+                    logger.info("Shutting down...")
+                    self.telegram_bot.stop()
+                    break
                 continue
 
             try:
@@ -192,6 +206,7 @@ class AutoTrader:
             except KeyboardInterrupt:
                 logger.info("Shutting down...")
                 self.notifier.send_system_alert("Bot stopped by user.")
+                self.telegram_bot.stop()
                 break
             except Exception as e:
                 logger.error(f"Cycle error: {e}", exc_info=True)
@@ -201,6 +216,7 @@ class AutoTrader:
                 time.sleep(scan_interval)
             except KeyboardInterrupt:
                 logger.info("Shutting down...")
+                self.telegram_bot.stop()
                 break
 
     def _run_cycle(self):
