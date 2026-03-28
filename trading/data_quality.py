@@ -61,7 +61,7 @@ class DataQualityChecker:
         """Return True if the most recent candle is within *max_age_minutes*."""
         if not candles:
             return False
-        last_ts = self._to_datetime(candles[-1]["timestamp"])
+        last_ts = self._to_datetime(candles[-1].get("timestamp", candles[-1].get("time", "")))
         age = (datetime.now(timezone.utc) - last_ts).total_seconds()
         return age <= max_age_minutes * 60
 
@@ -97,7 +97,7 @@ class DataQualityChecker:
         return datetime.fromisoformat(str(ts)).replace(tzinfo=timezone.utc)
 
     def _extract_timestamps(self, candles: list[dict]) -> list[datetime]:
-        return [self._to_datetime(c["timestamp"]) for c in candles]
+        return [self._to_datetime(c.get("timestamp", c.get("time", ""))) for c in candles]
 
     @staticmethod
     def _detect_interval(timestamps: list[datetime]) -> float:
@@ -146,7 +146,10 @@ class DataQualityChecker:
     def _check_staleness(self, timestamps: list[datetime], report: QualityReport) -> None:
         last = timestamps[-1]
         age_minutes = (datetime.now(timezone.utc) - last).total_seconds() / 60
-        if age_minutes > 30:
+        # On weekends forex data can be hours old — only warn, don't block
+        is_weekend = datetime.now(timezone.utc).weekday() >= 5
+        stale_threshold = 60 * 48 if is_weekend else 30  # 48 hours on weekend
+        if age_minutes > stale_threshold:
             report.stale_data = True
             report.issues.append(f"Data is stale: last candle is {age_minutes:.1f} minutes old")
 
