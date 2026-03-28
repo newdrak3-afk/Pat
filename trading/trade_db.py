@@ -209,12 +209,14 @@ class TradeDB:
     # Trades
     # ------------------------------------------------------------------
 
-    def save_trade(self, trade: dict) -> None:
+    def save_trade(self, trade: dict = None, **kwargs) -> None:
         """Insert or replace a trade row.
 
         ``trade`` must contain at least *trade_id*, *symbol*, and *side*.
         Missing optional keys are filled with sensible defaults.
         """
+        if trade is None:
+            trade = kwargs
         t = {
             "trade_id": trade["trade_id"],
             "symbol": trade["symbol"],
@@ -246,8 +248,12 @@ class TradeDB:
             t,
         )
 
-    def update_trade(self, trade_id: str, updates: dict) -> None:
+    def update_trade(self, trade_id: str = None, updates: dict = None, **kwargs) -> None:
         """Update specific columns of an existing trade."""
+        if updates is None:
+            updates = kwargs
+        # Remove trade_id from updates if accidentally passed as kwarg
+        updates.pop("trade_id", None)
         if not updates:
             return
         set_clause = ", ".join(f"{k} = :{k}" for k in updates)
@@ -302,10 +308,12 @@ class TradeDB:
     # Lessons
     # ------------------------------------------------------------------
 
-    def save_lesson(self, lesson: dict) -> None:
+    def save_lesson(self, lesson: dict = None, **kwargs) -> None:
+        if lesson is None:
+            lesson = kwargs
         l = {
-            "lesson_id": lesson["lesson_id"],
-            "trade_id": lesson["trade_id"],
+            "lesson_id": lesson.get("lesson_id", ""),
+            "trade_id": lesson.get("trade_id", ""),
             "category": lesson.get("category", ""),
             "description": lesson.get("description", ""),
             "rule_added": lesson.get("rule_added", ""),
@@ -349,9 +357,11 @@ class TradeDB:
     # Daily stats
     # ------------------------------------------------------------------
 
-    def save_daily_stats(self, stats: dict) -> None:
+    def save_daily_stats(self, stats: dict = None, **kwargs) -> None:
+        if stats is None:
+            stats = kwargs
         s = {
-            "date": stats["date"],
+            "date": stats.get("date", self._now()[:10]),
             "total_trades": stats.get("total_trades", 0),
             "wins": stats.get("wins", 0),
             "losses": stats.get("losses", 0),
@@ -395,11 +405,13 @@ class TradeDB:
     # Signals
     # ------------------------------------------------------------------
 
-    def save_signal(self, signal: dict) -> None:
+    def save_signal(self, signal: dict = None, **kwargs) -> None:
+        if signal is None:
+            signal = kwargs
         s = {
             "timestamp": signal.get("timestamp", self._now()),
-            "symbol": signal["symbol"],
-            "side": signal["side"],
+            "symbol": signal.get("symbol", ""),
+            "side": signal.get("side", ""),
             "confidence": signal.get("confidence", 0),
             "entry": signal.get("entry", 0),
             "sl": signal.get("sl"),
