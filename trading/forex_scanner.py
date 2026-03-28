@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime
 from typing import Optional
 
-from trading.brokers.oanda import OandaBroker, FOREX_PAIRS
+from trading.brokers.oanda import OandaBroker, FOREX_PAIRS, CRYPTO_PAIRS, ALL_PAIRS
 from trading.brokers.base import Quote
 
 logger = logging.getLogger(__name__)
@@ -28,21 +28,39 @@ class ForexScanner:
     def __init__(self, broker: OandaBroker):
         self.broker = broker
 
-    def scan_all_pairs(self) -> list[dict]:
+    def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
         """
-        Scan all major forex pairs and return signals.
+        Scan all pairs and return signals.
+
+        Auto-detects weekend: skips forex (closed), scans crypto (24/7).
+        On weekdays: scans both forex and crypto.
 
         Returns list of dicts with:
         - symbol, side, confidence, entry, stop_loss, take_profit, reasoning
         """
         if not self.broker.connected:
-            logger.warning("OANDA not connected — skipping forex scan")
+            logger.warning("OANDA not connected — skipping scan")
+            return []
+
+        # Detect weekend (forex closed Fri 5pm ET - Sun 5pm ET)
+        from datetime import datetime
+        now = datetime.utcnow()
+        is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
+
+        if is_weekend:
+            pairs = CRYPTO_PAIRS if include_crypto else []
+            logger.info(f"Weekend mode: scanning {len(pairs)} crypto pairs (forex closed)")
+        else:
+            pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
+            logger.info(f"Scanning {len(pairs)} pairs (forex + crypto)...")
+
+        if not pairs:
+            logger.info("No pairs to scan")
             return []
 
         signals = []
-        logger.info(f"Scanning {len(FOREX_PAIRS)} forex pairs...")
 
-        for symbol in FOREX_PAIRS:
+        for symbol in pairs:
             try:
                 signal = self._analyze_pair(symbol)
                 if signal:
@@ -53,7 +71,7 @@ class ForexScanner:
 
         # Sort by confidence
         signals.sort(key=lambda x: x["confidence"], reverse=True)
-        logger.info(f"Forex scan complete: {len(signals)} signals found")
+        logger.info(f"Scan complete: {len(signals)} signals found")
 
         return signals
 
@@ -75,7 +93,9 @@ class ForexScanner:
 
         # Get current quote for spread check
         quote = self.broker.get_quote(symbol)
-        if not quote or quote.spread > 0.05:  # skip if spread > 5%
+        is_crypto = symbol in CRYPTO_PAIRS
+        max_spread = 0.5 if is_crypto else 0.05  # crypto has wider spreads
+        if not quote or quote.spread > max_spread:
             return None
 
         current_price = quote.mid
@@ -178,8 +198,11 @@ class ForexScanner:
 
         confidence = min(score, 0.95)
 
-        # Calculate pip value
-        if "JPY" in symbol:
+        # Calculate pip value based on instrument type
+        is_crypto = symbol in CRYPTO_PAIRS
+        if is_crypto:
+            pip = 1.0  # Crypto moves in whole dollars
+        elif "JPY" in symbol:
             pip = 0.01
         else:
             pip = 0.0001
