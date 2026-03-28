@@ -386,21 +386,18 @@ class AutoTrader:
             )
 
             # ── GUARD: Risk check ──
-            risk_eval = self.risk_mgr.evaluate_trade(prediction, market)
-
-            if not risk_eval["approved"]:
-                logger.info(
-                    f"RISK: {signal['symbol']} — {risk_eval['reason']}"
-                )
-                self.notifier.send_trade_blocked(
-                    market, prediction, risk_eval["reason"]
-                )
+            # Skip Kelly-based risk manager for forex (designed for binary markets)
+            # Forex risk is handled by: position sizing (2% rule), drawdown guard,
+            # portfolio manager, and SL/TP on every trade
+            open_count = len(self._open_trades)
+            if open_count >= 5:
+                logger.info(f"RISK: {signal['symbol']} — max 5 open positions")
                 self.db.save_signal(
                     symbol=symbol, side=signal["side"],
                     confidence=signal["confidence"],
                     entry=signal["entry"],
                     sl=signal["stop_loss"], tp=signal["take_profit"],
-                    taken=False, reason_skipped=f"Risk: {risk_eval['reason']}",
+                    taken=False, reason_skipped="Max open positions (5)",
                 )
                 trades_blocked += 1
                 continue
