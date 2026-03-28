@@ -220,6 +220,67 @@ class TelegramNotifier:
         )
         self._send(msg)
 
+    # ─── STOCK / OPTIONS ALERTS ───
+
+    def send_option_alert(
+        self,
+        symbol: str,
+        option_type: str,
+        strike: float,
+        expiration: str,
+        hit_pct: float,
+        entry_price: float,
+        underlying_price: float,
+        amount: float,
+        reasoning: str,
+    ):
+        """Send alert for a stock option trade (call/put)."""
+        direction = "CALL" if option_type == "call" else "PUT"
+
+        msg = (
+            f"<b>OPTIONS ALERT</b>\n"
+            f"\n"
+            f"<b>{symbol} {direction} ${strike} exp {expiration}</b>\n"
+            f"\n"
+            f"Hit %: <b>{hit_pct:.0f}%</b>\n"
+            f"Stock price: <b>${underlying_price:.2f}</b>\n"
+            f"Option price: <b>${entry_price:.2f}</b>\n"
+            f"Cost: <b>${amount:.2f}</b>\n"
+            f"\n"
+            f"{reasoning[:300]}"
+        )
+        self._send(msg)
+
+    def send_forex_alert(
+        self,
+        symbol: str,
+        side: str,
+        hit_pct: float,
+        entry_price: float,
+        stop_loss: float,
+        take_profit: float,
+        units: float,
+        reasoning: str,
+    ):
+        """Send alert for a forex trade."""
+        direction = "BUY (Long)" if side == "buy" else "SELL (Short)"
+        pair = symbol.replace("_", "/")
+
+        msg = (
+            f"<b>FOREX ALERT</b>\n"
+            f"\n"
+            f"<b>{pair} — {direction}</b>\n"
+            f"\n"
+            f"Hit %: <b>{hit_pct:.0f}%</b>\n"
+            f"Entry: <b>{entry_price:.5f}</b>\n"
+            f"Stop Loss: <b>{stop_loss:.5f}</b>\n"
+            f"Take Profit: <b>{take_profit:.5f}</b>\n"
+            f"Units: <b>{units:,.0f}</b>\n"
+            f"\n"
+            f"{reasoning[:300]}"
+        )
+        self._send(msg)
+
     # ─── SYSTEM ALERTS ───
 
     def send_system_alert(self, message: str):
