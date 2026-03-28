@@ -193,7 +193,7 @@ class ForexScanner:
 
         # ─── FILTER ───
 
-        if side is None or score < 0.35:
+        if side is None or score < 0.15:
             return None
 
         confidence = min(score, 0.95)
