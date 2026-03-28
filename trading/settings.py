@@ -27,7 +27,7 @@ class FeatureToggles:
     """Master on/off switches for every feature."""
 
     # ─── CORE ───
-    scanning_enabled: bool = True          # Scan forex pairs for signals
+    scanning_enabled: bool = False         # Scan forex pairs for signals (OFF until you enable)
     auto_trading_enabled: bool = False     # Actually place orders (False = alerts only)
     demo_mode: bool = True                 # True = OANDA practice, False = LIVE money
 
