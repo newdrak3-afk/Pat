@@ -42,17 +42,10 @@ class ForexScanner:
             logger.warning("OANDA not connected — skipping scan")
             return []
 
-        # Detect weekend (forex closed Fri 5pm ET - Sun 5pm ET)
-        from datetime import datetime
-        now = datetime.utcnow()
-        is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
-
-        if is_weekend:
-            pairs = CRYPTO_PAIRS if include_crypto else []
-            logger.info(f"Weekend mode: scanning {len(pairs)} crypto pairs (forex closed)")
-        else:
-            pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
-            logger.info(f"Scanning {len(pairs)} pairs (forex + crypto)...")
+        # Always scan everything — forex candle history works even on weekends
+        # (generates signals from recent H1/H4 data before market closed)
+        pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
+        logger.info(f"Scanning {len(pairs)} pairs...")
 
         if not pairs:
             logger.info("No pairs to scan")
