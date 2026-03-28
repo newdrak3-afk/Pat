@@ -341,7 +341,7 @@ class AutoTrader:
             if self.settings.toggles.calibration_enabled:
                 calibrated = self.calibration.calibrate(raw_confidence)
                 signal["confidence"] = calibrated
-                if calibrated < 0.35:  # Below minimum threshold after calibration
+                if calibrated < 0.15:  # Below minimum threshold after calibration
                     logger.info(
                         f"CALIBRATION: {symbol} confidence dropped "
                         f"{raw_confidence:.2f} → {calibrated:.2f} — skipping"
