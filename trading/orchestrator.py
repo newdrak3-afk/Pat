@@ -25,6 +25,7 @@ from trading.research_agent import ResearchAgent
 from trading.prediction_agent import PredictionAgent
 from trading.risk_manager import RiskManager
 from trading.loss_analyzer import LossAnalyzer
+from trading.notifier import TelegramNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class Orchestrator:
         self.predictor = PredictionAgent(self.config)
         self.risk_mgr = RiskManager(self.config)
         self.loss_analyzer = LossAnalyzer(self.config)
+        self.notifier = TelegramNotifier(self.config)
 
         # Trade log
         self._trades: list[dict] = []
@@ -179,6 +181,9 @@ class Orchestrator:
                         f"  BLOCKED: {prediction.market_question[:50]} — "
                         f"{risk_eval['reason']}"
                     )
+                    self.notifier.send_trade_blocked(
+                        market, prediction, risk_eval["reason"]
+                    )
                     summary["trades_blocked"] += 1
                     continue
 
@@ -190,6 +195,12 @@ class Orchestrator:
                     self.risk_mgr.record_trade(trade, market)
                     summary["trades_approved"] += 1
                     summary["total_amount_bet"] += trade.amount
+
+                    # Send Telegram alert
+                    self.notifier.send_trade_alert(
+                        market, prediction,
+                        risk_eval["amount"], risk_eval["risk_score"],
+                    )
 
                     logger.info(
                         f"  TRADE PLACED: {trade.side} on "
@@ -204,6 +215,15 @@ class Orchestrator:
         summary["duration_seconds"] = (
             datetime.utcnow() - cycle_start
         ).total_seconds()
+
+        # Send scan summary to Telegram
+        self.notifier.send_scan_summary(
+            summary["markets_scanned"],
+            summary["markets_flagged"],
+            summary["predictions_made"],
+            summary["trades_approved"],
+            summary["trades_blocked"],
+        )
 
         logger.info("=" * 60)
         logger.info(f"CYCLE COMPLETE: {json.dumps(summary, indent=2)}")
@@ -331,6 +351,17 @@ class Orchestrator:
             logger.info(f"New rule: {lesson.rule_added}")
             logger.info(f"Description: {lesson.description[:200]}")
 
+            # Notify loss
+            self.notifier.send_loss_alert(
+                trade_obj, pnl, self.risk_mgr.bankroll,
+                lesson.description,
+            )
+        else:
+            # Notify win
+            self.notifier.send_win_alert(
+                trade_obj, pnl, self.risk_mgr.bankroll,
+            )
+
         self._save_trades()
         logger.info(
             f"Trade {trade_id} resolved: {outcome} | PnL: ${pnl:+.2f}"
@@ -349,6 +380,8 @@ class Orchestrator:
         logger.info(f"Scan interval: {self.config.scan_interval_seconds}s")
         logger.info(f"Dry run: {self.dry_run}")
         logger.info(self.risk_mgr.get_status())
+
+        self.notifier.send_startup(self.risk_mgr.bankroll, self.dry_run)
 
         while True:
             cycle_count += 1
