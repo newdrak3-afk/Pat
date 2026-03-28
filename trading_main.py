@@ -135,6 +135,29 @@ def cmd_backtest(orch: Orchestrator):
     print(orch.get_dashboard())
 
 
+def cmd_auto(orch: Orchestrator):
+    """Run auto-trader on OANDA practice account."""
+    from trading.auto_trader import AutoTrader
+
+    print("\n--- AUTO TRADER (OANDA Practice) ---")
+    print("This will trade REAL forex on your PRACTICE account.")
+    print("No real money. The bot learns from every loss.\n")
+
+    trader = AutoTrader(orch.config)
+    print(trader.get_status())
+    trader.start(scan_interval=orch.config.scan_interval_seconds)
+
+
+def cmd_status_auto(orch: Orchestrator):
+    """Show auto trader status."""
+    from trading.auto_trader import AutoTrader
+    trader = AutoTrader(orch.config)
+    if trader.oanda.connect():
+        print(trader.get_status())
+    else:
+        print("[!] Could not connect to OANDA")
+
+
 def print_help():
     print("""
 ╔══════════════════════════════════════════════════════════════╗
@@ -147,6 +170,8 @@ Commands:
   python trading_main.py research    Scan + parallel research (Twitter/Reddit/RSS)
   python trading_main.py run         Run one full trading cycle
   python trading_main.py live        Run continuously (dry run, Ctrl+C to stop)
+  python trading_main.py auto        Auto-trade forex on OANDA practice account
+  python trading_main.py status      Show auto trader stats (wins/losses/PnL)
   python trading_main.py dashboard   View system dashboard & stats
   python trading_main.py resolve     Resolve a trade as win/loss
   python trading_main.py lessons     View lessons learned from losses
@@ -160,11 +185,15 @@ Agents:
   4. Risk Manager     — Kelly sizing, daily limits, position limits
   5. Loss Analyzer    — Post-loss analysis, generates corrective rules
 
+Brokers:
+  - OANDA  — Forex (auto-trade on practice account)
+  - Robinhood — Stocks & options (alert-only mode)
+
 Setup:
   1. Copy .env.example and add your API keys
   2. pip install -r requirements.txt
   3. python trading_main.py scan   (test the scanner)
-  4. python trading_main.py run    (run a full cycle)
+  4. python trading_main.py auto   (auto-trade forex on practice)
 """)
 
 
@@ -173,6 +202,8 @@ COMMANDS = {
     "research": cmd_research,
     "run": cmd_run,
     "live": cmd_live,
+    "auto": cmd_auto,
+    "status": cmd_status_auto,
     "dashboard": cmd_dashboard,
     "resolve": cmd_resolve,
     "lessons": cmd_lessons,
