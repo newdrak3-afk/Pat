@@ -217,7 +217,7 @@ class GuardEngine:
             if is_crypto:
                 units = max(1, min(units, 5))
             else:
-                units = max(1, min(units, 10000))
+                units = max(1, min(units, 5000))  # Cap at 5k units for practice
         else:
             units = 1 if is_crypto else 1000
 

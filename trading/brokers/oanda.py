@@ -18,15 +18,17 @@ from trading.brokers.base import (
 
 logger = logging.getLogger(__name__)
 
-# Major forex pairs to scan
+# 28 standard forex pairs — majors, minors, crosses only
+# No exotics (HKD, MXN, ZAR, TRY, SEK, SGD) — wide spreads, poor fills
 FOREX_PAIRS = [
     "EUR_USD", "GBP_USD", "USD_JPY", "USD_CHF",
-    "AUD_USD", "USD_CAD", "NZD_USD", "EUR_GBP",
-    "EUR_JPY", "GBP_JPY", "EUR_CHF", "AUD_JPY",
-    "EUR_AUD", "GBP_AUD", "GBP_CHF", "EUR_CAD",
-    "AUD_CAD", "AUD_NZD", "NZD_JPY", "USD_SGD",
-    "USD_HKD", "USD_MXN", "USD_ZAR", "USD_TRY",
-    "EUR_NZD", "GBP_NZD", "GBP_CAD", "EUR_SEK",
+    "AUD_USD", "USD_CAD", "NZD_USD",
+    "EUR_GBP", "EUR_JPY", "EUR_CHF", "EUR_AUD", "EUR_CAD", "EUR_NZD",
+    "GBP_JPY", "GBP_CHF", "GBP_AUD", "GBP_CAD", "GBP_NZD",
+    "AUD_JPY", "AUD_CHF", "AUD_CAD", "AUD_NZD",
+    "CAD_JPY", "CAD_CHF",
+    "NZD_JPY", "NZD_CHF", "NZD_CAD",
+    "CHF_JPY",
 ]
 
 # Crypto pairs — trade 24/7 including weekends
