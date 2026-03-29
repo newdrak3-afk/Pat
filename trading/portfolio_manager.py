@@ -101,6 +101,9 @@ class PortfolioManager:
         entry_price: float,
     ) -> None:
         """Add an open position to the portfolio."""
+        # Normalize side: accept "buy"/"sell" or "long"/"short"
+        side = {"buy": "long", "sell": "short"}.get(side, side)
+
         if symbol in self._positions:
             raise ValueError(
                 f"Position already exists for {symbol}. "
@@ -202,6 +205,8 @@ class PortfolioManager:
         except ValueError as exc:
             return False, str(exc)
 
+        # Normalize side
+        side = {"buy": "long", "sell": "short"}.get(side, side)
         if side not in ("long", "short"):
             return False, f"Invalid side '{side}'; must be 'long' or 'short'"
         if units <= 0:
