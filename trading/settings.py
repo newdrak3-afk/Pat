@@ -58,6 +58,7 @@ class FeatureToggles:
     # ─── MODES ───
     backtest_mode: bool = False            # Run backtester instead of live
     paper_trading: bool = True             # Log trades but don't execute
+    runtime_profile: str = "paper"         # dev | paper | practice | live
 
 
 class Settings:
@@ -170,6 +171,86 @@ class Settings:
             "",
         ]
         return "\n".join(lines)
+
+    def apply_profile(self, profile: str):
+        """
+        Apply a runtime profile that sets multiple toggles at once.
+
+        Profiles:
+            dev     — All guards off, paper trading, fast iteration
+            paper   — Paper trading, drawdown guard on, most guards off
+            practice — OANDA practice account, all guards on, real orders
+            live    — REAL MONEY, all guards on, conservative settings
+        """
+        profiles = {
+            "dev": {
+                "scanning_enabled": False,
+                "auto_trading_enabled": False,
+                "demo_mode": True,
+                "paper_trading": True,
+                "drawdown_guard_enabled": False,
+                "drift_detector_enabled": False,
+                "portfolio_manager_enabled": False,
+                "slippage_model_enabled": False,
+                "data_quality_check": False,
+                "regime_detection_enabled": False,
+                "calibration_enabled": False,
+                "runtime_profile": "dev",
+            },
+            "paper": {
+                "scanning_enabled": False,
+                "auto_trading_enabled": True,
+                "demo_mode": True,
+                "paper_trading": True,
+                "drawdown_guard_enabled": True,
+                "drift_detector_enabled": False,
+                "portfolio_manager_enabled": False,
+                "slippage_model_enabled": False,
+                "data_quality_check": False,
+                "regime_detection_enabled": False,
+                "calibration_enabled": False,
+                "runtime_profile": "paper",
+            },
+            "practice": {
+                "scanning_enabled": True,
+                "auto_trading_enabled": True,
+                "demo_mode": True,
+                "paper_trading": False,
+                "drawdown_guard_enabled": True,
+                "drift_detector_enabled": True,
+                "portfolio_manager_enabled": True,
+                "slippage_model_enabled": True,
+                "data_quality_check": True,
+                "regime_detection_enabled": True,
+                "calibration_enabled": True,
+                "runtime_profile": "practice",
+            },
+            "live": {
+                "scanning_enabled": True,
+                "auto_trading_enabled": True,
+                "demo_mode": False,
+                "paper_trading": False,
+                "drawdown_guard_enabled": True,
+                "drift_detector_enabled": True,
+                "portfolio_manager_enabled": True,
+                "slippage_model_enabled": True,
+                "data_quality_check": True,
+                "regime_detection_enabled": True,
+                "calibration_enabled": True,
+                "max_trades_per_cycle": 2,
+                "runtime_profile": "live",
+            },
+        }
+
+        if profile not in profiles:
+            logger.warning(f"Unknown profile: {profile}")
+            return False
+
+        for key, value in profiles[profile].items():
+            setattr(self.toggles, key, value)
+        self.save()
+        logger.info(f"Applied runtime profile: {profile}")
+        return True
 
     def to_dict(self) -> dict:
         """Export all settings as dict."""

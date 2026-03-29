@@ -187,6 +187,11 @@ class TelegramBot:
             "/guards": self._cmd_guards,
             "/set": self._cmd_set,
             "/crypto": self._cmd_crypto,
+            "/kill": self._cmd_kill,
+            "/safe": self._cmd_safe,
+            "/mode": self._cmd_mode,
+            "/session": self._cmd_session,
+            "/why": self._cmd_why,
         }
 
         handler = handlers.get(cmd)
@@ -216,14 +221,20 @@ class TelegramBot:
             "/positions — Open positions\n"
             "/history — Recent trade history\n"
             "/report — Full performance report\n"
-            "/lessons — Lessons from losses\n\n"
+            "/lessons — Lessons from losses\n"
+            "/session — Current trading session\n"
+            "/why — Why last signal was blocked\n\n"
             "<b>Controls:</b>\n"
             "/scan — Toggle scanning ON/OFF\n"
             "/trade — Toggle auto-trading ON/OFF\n"
             "/crypto — Scan crypto NOW (works weekends)\n"
             "/pause — Pause everything\n"
             "/resume — Resume all\n"
-            "/set key value — Change a setting\n\n"
+            "/set key value — Change a setting\n"
+            "/mode [dev|paper|practice|live] — Switch profile\n\n"
+            "<b>Emergency:</b>\n"
+            "/kill — STOP everything immediately\n"
+            "/safe — Safe mode (close all, stop trading)\n\n"
             "<b>Guards:</b>\n"
             "/guards — All guard statuses\n"
             "/drawdown — Drawdown guard\n"
@@ -538,6 +549,129 @@ class TelegramBot:
             self._send(f"Set <b>{key}</b> = <b>{parsed}</b>")
         else:
             self._send(f"Unknown setting: {key}")
+
+    # ─── EMERGENCY & PROFILE COMMANDS ───
+
+    def _cmd_kill(self, args):
+        """Emergency stop — disable everything immediately."""
+        if self._settings:
+            self._settings.set("scanning_enabled", False)
+            self._settings.set("auto_trading_enabled", False)
+            self._settings.set("paper_trading", True)
+            self._send(
+                "<b>EMERGENCY STOP</b>\n\n"
+                "Scanning: OFF\n"
+                "Auto-Trading: OFF\n"
+                "Paper Trading: ON\n\n"
+                "All trading halted. Open positions remain until manually closed.\n"
+                "Send /resume to restart."
+            )
+        else:
+            self._send("Settings not available")
+
+    def _cmd_safe(self, args):
+        """Safe mode — close all positions and stop trading."""
+        if self._settings:
+            self._settings.set("scanning_enabled", False)
+            self._settings.set("auto_trading_enabled", False)
+
+        # Try to close all positions
+        closed = 0
+        if self._oanda and self._oanda.connected:
+            try:
+                positions = self._oanda.get_positions()
+                for p in positions:
+                    try:
+                        self._oanda.close_position(p.symbol)
+                        closed += 1
+                    except Exception as e:
+                        logger.error(f"Failed to close {p.symbol}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to get positions: {e}")
+
+        self._send(
+            f"<b>SAFE MODE ACTIVATED</b>\n\n"
+            f"Closed {closed} position(s).\n"
+            f"Scanning: OFF\n"
+            f"Auto-Trading: OFF\n\n"
+            f"System is now in safe mode.\n"
+            f"Send /resume to restart."
+        )
+
+    def _cmd_mode(self, args):
+        """Switch runtime profile."""
+        if not self._settings:
+            self._send("Settings not available")
+            return
+
+        if not args:
+            current = self._settings.toggles.runtime_profile
+            self._send(
+                f"Current profile: <b>{current}</b>\n\n"
+                f"Available profiles:\n"
+                f"  <b>dev</b> — All guards off, no trading\n"
+                f"  <b>paper</b> — Paper trading, minimal guards\n"
+                f"  <b>practice</b> — OANDA practice, all guards on\n"
+                f"  <b>live</b> — REAL MONEY, all guards on\n\n"
+                f"Usage: /mode practice"
+            )
+            return
+
+        profile = args[0].lower()
+        if profile == "live":
+            self._send(
+                "<b>WARNING: LIVE MODE</b>\n\n"
+                "This will trade with REAL MONEY.\n"
+                "Send /mode live_confirm to proceed."
+            )
+            return
+
+        if profile == "live_confirm":
+            profile = "live"
+
+        if self._settings.apply_profile(profile):
+            self._send(f"Switched to <b>{profile}</b> profile.\nSend /settings to see changes.")
+        else:
+            self._send(f"Unknown profile: {profile}\nOptions: dev, paper, practice, live")
+
+    def _cmd_session(self, args):
+        """Show current trading session info."""
+        from trading.session_awareness import get_session_status
+        self._send(f"<pre>{get_session_status()}</pre>")
+
+    def _cmd_why(self, args):
+        """Show why the last signal(s) were blocked."""
+        if not self._db:
+            self._send("Database not available")
+            return
+
+        try:
+            # Get recent skipped signals from DB
+            import sqlite3
+            conn = sqlite3.connect(self._db.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute(
+                "SELECT symbol, side, confidence, reason_skipped, timestamp "
+                "FROM signals WHERE taken = 0 AND reason_skipped != '' "
+                "ORDER BY timestamp DESC LIMIT 5"
+            )
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                self._send("No blocked signals found recently.")
+                return
+
+            lines = ["<b>RECENTLY BLOCKED SIGNALS</b>\n"]
+            for r in rows:
+                lines.append(
+                    f"\n{r['symbol']} {r['side'].upper()} ({r['confidence']*100:.0f}%)\n"
+                    f"Reason: {r['reason_skipped']}\n"
+                    f"Time: {r['timestamp'][:16]}"
+                )
+            self._send("\n".join(lines))
+        except Exception as e:
+            self._send(f"Error: {str(e)[:200]}")
 
     # ─── SEND ───
 
