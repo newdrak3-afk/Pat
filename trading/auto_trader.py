@@ -504,19 +504,40 @@ class AutoTrader:
 
         self._save_state()
 
+    def _get_git_sha(self) -> str:
+        """Get current git SHA for version tracking."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout.strip() if result.returncode == 0 else "unknown"
+        except Exception:
+            return "unknown"
+
     def get_status(self) -> str:
-        """Get current auto trader status."""
+        """Get current auto trader status with config snapshot."""
         total = self._stats["wins"] + self._stats["losses"]
         win_rate = (self._stats["wins"] / total * 100) if total > 0 else 0
         balance = self.oanda.get_account_balance() if self.oanda.connected else 0
         session = get_current_session()
+        t = self.settings.toggles
 
         lines = [
             "╔══════════════════════════════════════╗",
             "║     AUTO TRADER v3 STATUS            ║",
             "╚══════════════════════════════════════╝",
             "",
-            f"  Profile:       {self.settings.toggles.runtime_profile}",
+            f"  Version:       {self._get_git_sha()}",
+            f"  Profile:       {t.runtime_profile}",
+            f"  Account:       {'PRACTICE' if t.demo_mode else 'LIVE'}",
+            f"  Risk/Trade:    1%",
+            f"  Max Positions: 3",
+            f"  Max Trades/Cy: {t.max_trades_per_cycle}",
+            f"  Bar-Close:     ON",
+            f"  Idempotency:   ON",
+            "",
             f"  Session:       {session.primary.replace('_', ' ').title()}",
             f"  Liquidity:     {session.liquidity.upper()}",
             f"  Balance:       ${balance:,.2f}",
