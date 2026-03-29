@@ -374,18 +374,24 @@ class AutoTrader:
         # Step 4: Run each signal through the guard engine
         trades_placed = 0
         trades_blocked = 0
-        max_trades = self.settings.toggles.max_trades_per_cycle
+        # Demo: let it trade freely to learn; Live: use configured limit
+        max_trades = 10 if self.settings.toggles.demo_mode else self.settings.toggles.max_trades_per_cycle
 
-        for signal in signals[:5]:
+        # Demo: evaluate all signals; Live: top 5 only
+        max_signals = len(signals) if self.settings.toggles.demo_mode else 5
+        for signal in signals[:max_signals]:
             if trades_placed >= max_trades:
                 break
 
             # Run all guards via GuardEngine
+            # Demo: no position cap so the bot can learn from more trades
+            # Live: tighten to max_open=3
+            max_open = 50 if self.settings.toggles.demo_mode else 3
             approval = self.guard_engine.evaluate(
                 signal=signal,
                 balance=balance,
                 open_trade_count=self.position_mgr.open_count,
-                max_open=3,  # Conservative: max 3 open positions
+                max_open=max_open,
             )
 
             if not approval.approved:
