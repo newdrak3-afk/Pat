@@ -70,9 +70,10 @@ class ForexScanner:
 
     def _analyze_pair(self, symbol: str) -> Optional[dict]:
         """Analyze a single forex pair for trading signals."""
-        # Get candle data
+        # Get candle data across timeframes
         candles_h1 = self.broker.get_candles(symbol, "H1", 100)
         candles_h4 = self.broker.get_candles(symbol, "H4", 50)
+        candles_d1 = self.broker.get_candles(symbol, "D", 30)
 
         if len(candles_h1) < 50 or len(candles_h4) < 20:
             return None
@@ -93,7 +94,43 @@ class ForexScanner:
 
         current_price = quote.mid
 
-        # ─── INDICATORS ───
+        # ─── HIGHER-TIMEFRAME TREND FILTER (GATE) ───
+        # This is the key filter: D1 and H4 must agree on direction.
+        # H1 only looks for pullback entries WITH the trend.
+        # Countertrend trades are blocked entirely.
+
+        # H4 trend: price vs SMA20 + SMA20 slope
+        h4_sma_20 = np.mean(closes_h4[-20:])
+        h4_sma_10 = np.mean(closes_h4[-10:])
+        h4_trend = "up" if closes_h4[-1] > h4_sma_20 and h4_sma_10 > h4_sma_20 else \
+                   "down" if closes_h4[-1] < h4_sma_20 and h4_sma_10 < h4_sma_20 else \
+                   "flat"
+
+        # D1 trend: price vs SMA20
+        d1_trend = "flat"
+        if len(candles_d1) >= 20:
+            closes_d1 = np.array([c["close"] for c in candles_d1])
+            d1_sma_20 = np.mean(closes_d1[-20:])
+            d1_sma_10 = np.mean(closes_d1[-10:])
+            d1_trend = "up" if closes_d1[-1] > d1_sma_20 and d1_sma_10 > d1_sma_20 else \
+                       "down" if closes_d1[-1] < d1_sma_20 and d1_sma_10 < d1_sma_20 else \
+                       "flat"
+
+        # Determine allowed trade direction from higher timeframes
+        # Both H4 and D1 must agree, or at least one agrees and the other is flat
+        if h4_trend == "up" and d1_trend in ("up", "flat"):
+            htf_bias = "buy"
+        elif h4_trend == "down" and d1_trend in ("down", "flat"):
+            htf_bias = "sell"
+        elif d1_trend == "up" and h4_trend == "flat":
+            htf_bias = "buy"
+        elif d1_trend == "down" and h4_trend == "flat":
+            htf_bias = "sell"
+        else:
+            # No clear trend or conflicting — skip this pair entirely
+            return None
+
+        # ─── H1 INDICATORS ───
 
         # Moving averages
         sma_20 = np.mean(closes_h1[-20:])
@@ -120,96 +157,77 @@ class ForexScanner:
         recent_volume = np.mean(volumes_h1[-3:])
         volume_spike = recent_volume > avg_volume * 1.5
 
-        # Higher timeframe trend (H4)
-        h4_sma_20 = np.mean(closes_h4[-20:])
-        h4_trend = "up" if closes_h4[-1] > h4_sma_20 else "down"
-
-        # ─── SIGNAL LOGIC ───
+        # ─── H1 SIGNAL LOGIC (only in htf_bias direction) ───
 
         score = 0.0
         reasons = []
-        side = None
+        side = htf_bias  # Locked to higher-timeframe direction
 
-        # 1. MA Crossover (strict — price crossed SMA20 on last bar)
-        if sma_20 > sma_50 and closes_h1[-2] < sma_20 and current_price > sma_20:
-            score += 0.2
-            reasons.append("Price crossed above SMA20 (bullish)")
-            side = "buy"
-        elif sma_20 < sma_50 and closes_h1[-2] > sma_20 and current_price < sma_20:
-            score += 0.2
-            reasons.append("Price crossed below SMA20 (bearish)")
-            side = "sell"
+        # Higher-timeframe trend bonus (always applies since we passed the gate)
+        score += 0.25
+        reasons.append(f"HTF trend: D1={d1_trend} H4={h4_trend} → {htf_bias}")
 
-        # 1b. MA Trend (relaxed — price is on one side of SMA20)
-        if side is None:
-            if current_price > sma_20 and sma_20 > sma_50:
+        # 1. H1 MA alignment with trend
+        if side == "buy":
+            if sma_20 > sma_50 and current_price > sma_20:
+                score += 0.15
+                reasons.append("H1 MAs aligned bullish")
+            elif closes_h1[-2] < sma_20 and current_price > sma_20:
+                score += 0.2
+                reasons.append("H1 pullback bounce above SMA20")
+        else:
+            if sma_20 < sma_50 and current_price < sma_20:
+                score += 0.15
+                reasons.append("H1 MAs aligned bearish")
+            elif closes_h1[-2] > sma_20 and current_price < sma_20:
+                score += 0.2
+                reasons.append("H1 pullback rejection below SMA20")
+
+        # 2. RSI — look for pullback entries, not extreme reversals
+        if side == "buy":
+            if 30 <= rsi <= 45:
+                score += 0.15
+                reasons.append(f"RSI pullback zone ({rsi:.0f})")
+            elif rsi < 30:
                 score += 0.1
-                reasons.append("Above SMA20 > SMA50 (bullish trend)")
-                side = "buy"
-            elif current_price < sma_20 and sma_20 < sma_50:
+                reasons.append(f"RSI oversold ({rsi:.0f})")
+        else:
+            if 55 <= rsi <= 70:
+                score += 0.15
+                reasons.append(f"RSI pullback zone ({rsi:.0f})")
+            elif rsi > 70:
                 score += 0.1
-                reasons.append("Below SMA20 < SMA50 (bearish trend)")
-                side = "sell"
+                reasons.append(f"RSI overbought ({rsi:.0f})")
 
-        # 2. RSI
-        if rsi < 30:
-            score += 0.2
-            reasons.append(f"RSI oversold ({rsi:.0f})")
-            if side is None:
-                side = "buy"
-        elif rsi > 70:
-            score += 0.2
-            reasons.append(f"RSI overbought ({rsi:.0f})")
-            if side is None:
-                side = "sell"
-        elif rsi < 40 and side == "buy":
-            score += 0.1
-            reasons.append(f"RSI leaning oversold ({rsi:.0f})")
-        elif rsi > 60 and side == "sell":
-            score += 0.1
-            reasons.append(f"RSI leaning overbought ({rsi:.0f})")
-
-        # 3. MACD
+        # 3. MACD confirmation
         if macd > 0 and side == "buy":
-            score += 0.15
+            score += 0.1
             reasons.append("MACD bullish")
         elif macd < 0 and side == "sell":
-            score += 0.15
+            score += 0.1
             reasons.append("MACD bearish")
 
-        # 4. H4 trend alignment
-        if h4_trend == "up" and side == "buy":
-            score += 0.2
-            reasons.append("Aligned with H4 uptrend")
-        elif h4_trend == "down" and side == "sell":
-            score += 0.2
-            reasons.append("Aligned with H4 downtrend")
-        elif h4_trend != ("up" if side == "buy" else "down") and side:
-            score -= 0.1
-            reasons.append("Against H4 trend (caution)")
-
-        # 5. Volume confirmation
-        if volume_spike and side:
+        # 4. Volume confirmation
+        if volume_spike:
             score += 0.1
             reasons.append("Volume spike confirms move")
 
-        # 6. Trend strength
+        # 5. H1 trend strength
         if side == "buy" and current_price > sma_50:
-            score += 0.1
-            reasons.append("Above SMA50 (strong trend)")
+            score += 0.05
+            reasons.append("Above SMA50")
         elif side == "sell" and current_price < sma_50:
-            score += 0.1
-            reasons.append("Below SMA50 (strong trend)")
+            score += 0.05
+            reasons.append("Below SMA50")
 
         # ─── FILTER ───
-
-        if side is None or score < 0.15:
+        # Minimum 0.35 confidence (HTF trend alone gives 0.25, need H1 confirmation)
+        if score < 0.35:
             return None
 
         confidence = min(score, 0.95)
 
         # Calculate pip value based on instrument type
-        is_crypto = symbol in CRYPTO_PAIRS
         if is_crypto:
             pip = 1.0  # Crypto moves in whole dollars
         elif "JPY" in symbol:
@@ -236,6 +254,7 @@ class ForexScanner:
         reasoning = (
             f"{'  |  '.join(reasons)}\n"
             f"RSI: {rsi:.0f} | SMA20: {sma_20:.5f} | SMA50: {sma_50:.5f}\n"
+            f"D1: {d1_trend} | H4: {h4_trend} | HTF bias: {htf_bias}\n"
             f"ATR: {atr/pip:.1f} pips | SL: {sl_pips:.0f} pips | TP: {tp_pips:.0f} pips"
         )
 
@@ -253,6 +272,8 @@ class ForexScanner:
             "rsi": rsi,
             "atr": atr,
             "h4_trend": h4_trend,
+            "d1_trend": d1_trend,
+            "htf_bias": htf_bias,
         }
 
     def _ema(self, data: np.ndarray, period: int) -> float:
