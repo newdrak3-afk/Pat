@@ -65,6 +65,9 @@ class TelegramBot:
         self._loss_analyzer = None
         self._get_status_fn: Optional[Callable] = None
         self._get_report_fn: Optional[Callable] = None
+        self._heartbeat_enabled = True
+        self._last_scan_time: Optional[datetime] = None
+        self._guard_engine = None
 
         if not self.enabled:
             logger.warning("Telegram bot not configured")
@@ -96,6 +99,10 @@ class TelegramBot:
         self._get_status_fn = get_status_fn
         self._get_report_fn = get_report_fn
 
+    def connect_guard_engine(self, guard_engine):
+        """Connect the guard engine for heartbeat reporting."""
+        self._guard_engine = guard_engine
+
     def start(self):
         """Start listening for commands in a background thread."""
         if not self.enabled:
@@ -105,6 +112,8 @@ class TelegramBot:
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
         logger.info("Telegram command bot started")
         self._send("Bot command listener started. Send /help for commands.")
 
@@ -194,6 +203,7 @@ class TelegramBot:
             "/session": self._cmd_session,
             "/why": self._cmd_why,
             "/options": self._cmd_options,
+            "/heartbeat": self._cmd_heartbeat,
         }
 
         handler = handlers.get(cmd)
@@ -243,7 +253,8 @@ class TelegramBot:
             "/drawdown — Drawdown guard\n"
             "/drift — Drift detector\n"
             "/exposure — Portfolio exposure\n"
-            "/settings — All current settings"
+            "/settings — All current settings\n"
+            "/heartbeat — Toggle health heartbeat ON/OFF"
         )
 
     def _cmd_status(self, args):
@@ -665,32 +676,127 @@ class TelegramBot:
             return
 
         try:
-            # Get recent skipped signals from DB
+            # Get recent signal verdicts from DB (both approved and denied)
             import sqlite3
             conn = sqlite3.connect(self._db.db_path)
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                "SELECT symbol, side, confidence, reason_skipped, timestamp "
-                "FROM signals WHERE taken = 0 AND reason_skipped != '' "
-                "ORDER BY timestamp DESC LIMIT 5"
+                "SELECT symbol, side, confidence, taken, reason_skipped, timestamp "
+                "FROM signals "
+                "ORDER BY timestamp DESC LIMIT 10"
             )
             rows = cursor.fetchall()
             conn.close()
 
             if not rows:
-                self._send("No blocked signals found recently.")
+                self._send("No signal verdicts found recently.")
                 return
 
-            lines = ["<b>RECENTLY BLOCKED SIGNALS</b>\n"]
+            lines = ["<b>RECENT SIGNAL VERDICTS</b>\n"]
             for r in rows:
+                verdict = "APPROVED" if r['taken'] else "BLOCKED"
+                reason = r['reason_skipped'] if r['reason_skipped'] else "All guards passed"
                 lines.append(
-                    f"\n{r['symbol']} {r['side'].upper()} ({r['confidence']*100:.0f}%)\n"
-                    f"Reason: {r['reason_skipped']}\n"
+                    f"\n{'✓' if r['taken'] else '✗'} {r['symbol']} {r['side'].upper()} "
+                    f"({r['confidence']*100:.0f}%) — <b>{verdict}</b>\n"
+                    f"Reason: {reason}\n"
                     f"Time: {r['timestamp'][:16]}"
                 )
             self._send("\n".join(lines))
         except Exception as e:
             self._send(f"Error: {str(e)[:200]}")
+
+    # ─── HEARTBEAT ───
+
+    def _heartbeat_loop(self):
+        """Send a health heartbeat every 2 hours."""
+        interval = 2 * 60 * 60  # 2 hours in seconds
+        while self._running:
+            time.sleep(interval)
+            if not self._running or not self._heartbeat_enabled:
+                continue
+            try:
+                self._send_heartbeat()
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+
+    def _send_heartbeat(self):
+        """Build and send the heartbeat status message."""
+        lines = ["<b>HEARTBEAT</b>\n"]
+
+        # Brokers up/down
+        if self._oanda:
+            oanda_ok = getattr(self._oanda, "connected", False)
+            lines.append(f"OANDA: {'UP' if oanda_ok else 'DOWN'}")
+        else:
+            lines.append("OANDA: not configured")
+
+        if self._options_trader:
+            opt_ok = getattr(self._options_trader, "connected", False)
+            lines.append(f"Options: {'UP' if opt_ok else 'DOWN'}")
+
+        # Last scan time
+        if self._last_scan_time:
+            lines.append(f"Last scan: {self._last_scan_time.strftime('%H:%M:%S')}")
+        else:
+            lines.append("Last scan: none")
+
+        # Open positions and PnL
+        total_pnl = 0.0
+        pos_count = 0
+        if self._oanda and getattr(self._oanda, "connected", False):
+            try:
+                positions = self._oanda.get_positions()
+                pos_count = len(positions) if positions else 0
+                total_pnl = sum(getattr(p, "pnl", 0) for p in (positions or []))
+            except Exception:
+                pass
+        lines.append(f"Open positions: {pos_count}")
+        lines.append(f"PnL: ${total_pnl:+,.2f}")
+
+        # Drawdown %
+        if self._drawdown:
+            try:
+                dd_pct = getattr(self._drawdown, "current_drawdown_pct", None)
+                if dd_pct is not None:
+                    lines.append(f"Drawdown: {dd_pct:.1f}%")
+                else:
+                    can, reason = self._drawdown.can_trade()
+                    lines.append(f"Drawdown: {'OK' if can else reason}")
+            except Exception:
+                lines.append("Drawdown: unavailable")
+
+        # Guard states
+        lines.append("")
+        lines.append("<b>Guards:</b>")
+        if self._drawdown:
+            can, _ = self._drawdown.can_trade()
+            lines.append(f"  Drawdown: {'OK' if can else 'BLOCKED'}")
+        if self._drift:
+            drifting, _ = self._drift.is_drifting()
+            lines.append(f"  Drift: {'DRIFTING' if drifting else 'OK'}")
+        if self._calibration:
+            overconf = self._calibration.is_overconfident()
+            lines.append(f"  Calibration: {'OVERCONFIDENT' if overconf else 'OK'}")
+        if self._portfolio:
+            report = self._portfolio.get_exposure_report()
+            lines.append(f"  Portfolio: {report.get('total_positions', 0)} pos, "
+                        f"{report.get('total_exposure_pct', 0):.0f}% exposed")
+
+        lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self._send("\n".join(lines))
+
+    def _cmd_heartbeat(self, args):
+        """Toggle the periodic heartbeat on/off."""
+        if args and args[0].lower() in ("on", "true", "1"):
+            self._heartbeat_enabled = True
+        elif args and args[0].lower() in ("off", "false", "0"):
+            self._heartbeat_enabled = False
+        else:
+            self._heartbeat_enabled = not self._heartbeat_enabled
+
+        state = "ON" if self._heartbeat_enabled else "OFF"
+        self._send(f"Heartbeat: <b>{state}</b> (every 2 hours)")
 
     # ─── SEND ───
 

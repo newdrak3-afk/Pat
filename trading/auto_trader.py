@@ -122,18 +122,66 @@ class AutoTrader:
         self._load_state()
 
     def _load_state(self):
-        """Load saved state."""
+        """Load saved state with crash recovery.
+
+        On restart, reconciles saved open trades against broker positions
+        to avoid duplicate orders and drop stale entries.
+        """
         state_file = "trading/data/auto_trader_state.json"
         try:
             with open(state_file) as f:
                 data = json.load(f)
                 saved_stats = data.get("stats", {})
                 self._stats.update(saved_stats)
-                # Restore open trades to position manager
-                open_trades = data.get("open_trades", {})
-                self.position_mgr.open_trades = open_trades
+
+                saved_open = data.get("open_trades", {})
+                reconciled = self._reconcile_open_trades(saved_open)
+                self.position_mgr.open_trades = reconciled
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+
+    def _reconcile_open_trades(self, saved_open: dict) -> dict:
+        """Reconcile saved open trades with actual broker positions.
+
+        - Drops saved trades that no longer exist on the broker.
+        - Keeps broker positions that are still tracked in saved state.
+        - Logs any discrepancies for debugging.
+        """
+        if not saved_open:
+            return {}
+
+        try:
+            broker_positions = self.oanda.get_positions()
+        except Exception as e:
+            logger.warning(f"Could not fetch broker positions for reconciliation: {e}")
+            # If we can't reach the broker yet, keep saved state as-is;
+            # startup_checks() will catch connectivity issues later.
+            return saved_open
+
+        # Build a set of (symbol, side) tuples currently open on the broker
+        broker_open = set()
+        for pos in broker_positions:
+            broker_open.add((pos.symbol, pos.side))
+
+        reconciled: dict = {}
+        for trade_id, info in saved_open.items():
+            key = (info.get("symbol"), info.get("side"))
+            if key in broker_open:
+                reconciled[trade_id] = info
+            else:
+                logger.warning(
+                    f"Crash recovery: dropping stale trade {trade_id} "
+                    f"({info.get('symbol')} {info.get('side')}) — "
+                    "no matching broker position"
+                )
+
+        if len(reconciled) != len(saved_open):
+            logger.info(
+                f"Crash recovery: kept {len(reconciled)}/{len(saved_open)} "
+                "saved trades after broker reconciliation"
+            )
+
+        return reconciled
 
     def _save_state(self):
         """Save state to disk."""
@@ -145,6 +193,48 @@ class AutoTrader:
                 "open_trades": self.position_mgr.open_trades,
             }, f, indent=2)
 
+    def _startup_checks(self):
+        """Fail-fast pre-flight checks before starting the trading loop.
+
+        Raises ``RuntimeError`` if any critical requirement is missing so
+        the bot never enters the main loop in a broken state.
+        """
+        # 1. Required environment variables
+        required_env = [
+            "OANDA_API_KEY",
+            "OANDA_ACCOUNT_ID",
+            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID",
+        ]
+        missing = [v for v in required_env if not os.environ.get(v)]
+        if missing:
+            raise RuntimeError(
+                f"Missing required env vars: {', '.join(missing)}"
+            )
+
+        # 2. Broker connectivity
+        logger.info("Startup check: verifying OANDA connectivity...")
+        if not self.oanda.connect():
+            raise RuntimeError(
+                "OANDA connection failed — check API key and account ID"
+            )
+
+        # 3. DB schema sanity (attempt a lightweight query on each core table)
+        logger.info("Startup check: verifying DB schema...")
+        for table in ("trades", "signals", "positions", "daily_stats", "lessons"):
+            try:
+                self.db._execute(
+                    f"SELECT 1 FROM {table} LIMIT 1",
+                    fetch="one",
+                    commit=False,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"DB schema check failed for table '{table}': {e}"
+                )
+
+        logger.info("All startup checks passed")
+
     def start(self, scan_interval: int = 300):
         """
         Start the auto-trading loop.
@@ -152,17 +242,17 @@ class AutoTrader:
         Always starts the Telegram command bot first so you can
         control the system from your phone even when scanning is off.
         """
-        scan_interval = self.settings.toggles.scan_interval_seconds or scan_interval
-
-        # Connect to OANDA first
-        logger.info("Connecting to OANDA...")
-        if not self.oanda.connect():
-            self.notifier.send_system_alert(
-                "Failed to connect to OANDA. Check your API key and account ID."
-            )
-            logger.error("OANDA connection failed — exiting")
+        # Fail fast if critical requirements are not met
+        try:
+            self._startup_checks()
+        except RuntimeError as e:
+            logger.error(f"Startup check FAILED: {e}")
+            self.notifier.send_system_alert(f"Startup failed: {e}")
             return
 
+        scan_interval = self.settings.toggles.scan_interval_seconds or scan_interval
+
+        # Connection already verified by _startup_checks()
         balance = self.oanda.get_account_balance()
         self.scanner = ForexScanner(self.oanda)
 

@@ -113,7 +113,7 @@ class GuardEngine:
             approval.approved = False
             approval.reasons.append(f"Max {max_open} open positions")
             approval.guard_results["max_positions"] = False
-            self._log_skip(signal, "Max open positions")
+            self._log_verdict(signal, approved=False, reason="Max open positions")
             return approval
         approval.guard_results["max_positions"] = True
 
@@ -124,7 +124,7 @@ class GuardEngine:
             if not can_trade:
                 approval.approved = False
                 approval.reasons.append(f"Drawdown: {dd_reason}")
-                self._log_skip(signal, f"Drawdown: {dd_reason}")
+                self._log_verdict(signal, approved=False, reason=f"Drawdown: {dd_reason}")
                 return approval
 
         # ── 3. Drift detector ──
@@ -134,7 +134,7 @@ class GuardEngine:
                 approval.approved = False
                 approval.reasons.append(f"Drift: {drift_reason}")
                 approval.guard_results["drift"] = False
-                self._log_skip(signal, f"Drift: {drift_reason}")
+                self._log_verdict(signal, approved=False, reason=f"Drift: {drift_reason}")
                 return approval
             approval.guard_results["drift"] = True
 
@@ -146,7 +146,7 @@ class GuardEngine:
             if not report.is_valid:
                 approval.approved = False
                 approval.reasons.append(f"Data quality: {'; '.join(report.issues[:2])}")
-                self._log_skip(signal, "Data quality failed")
+                self._log_verdict(signal, approved=False, reason="Data quality failed")
                 return approval
 
         # ── 5. Regime detection ──
@@ -158,7 +158,7 @@ class GuardEngine:
             if not should:
                 approval.approved = False
                 approval.reasons.append(f"Regime: {regime_info.regime.value}")
-                self._log_skip(signal, f"Regime: {regime_info.regime.value}")
+                self._log_verdict(signal, approved=False, reason=f"Regime: {regime_info.regime.value}")
                 return approval
 
         # ── 6. Portfolio exposure ──
@@ -170,7 +170,7 @@ class GuardEngine:
             if not can_add:
                 approval.approved = False
                 approval.reasons.append(f"Portfolio: {port_reason}")
-                self._log_skip(signal, f"Portfolio: {port_reason}")
+                self._log_verdict(signal, approved=False, reason=f"Portfolio: {port_reason}")
                 return approval
 
         # ── 7. Calibration (adjust, not block) ──
@@ -185,7 +185,7 @@ class GuardEngine:
                     f"Calibration: {raw_confidence:.2f} → {calibrated:.2f}"
                 )
                 approval.guard_results["calibration"] = False
-                self._log_skip(signal, "Below calibrated threshold")
+                self._log_verdict(signal, approved=False, reason="Below calibrated threshold")
                 return approval
         else:
             approval.adjusted_confidence = raw_confidence
@@ -227,11 +227,12 @@ class GuardEngine:
         # All guards passed
         if approval.approved:
             approval.reasons.append("All guards passed")
+            self._log_verdict(signal, approved=True, reason="All guards passed")
 
         return approval
 
-    def _log_skip(self, signal: dict, reason: str):
-        """Log a skipped signal to the database."""
+    def _log_verdict(self, signal: dict, approved: bool, reason: str):
+        """Log every guard verdict (approved or denied) to the database."""
         if self.db:
             try:
                 self.db.save_signal(
@@ -241,11 +242,11 @@ class GuardEngine:
                     entry=signal.get("entry", 0),
                     sl=signal.get("stop_loss"),
                     tp=signal.get("take_profit"),
-                    taken=False,
-                    reason_skipped=reason,
+                    taken=approved,
+                    reason_skipped="" if approved else reason,
                 )
             except Exception as e:
-                logger.debug(f"Failed to log skipped signal: {e}")
+                logger.debug(f"Failed to log verdict: {e}")
 
     def cycle_check(self) -> tuple[bool, str]:
         """
