@@ -102,11 +102,22 @@ class ForexScanner:
         return signals
 
     def _analyze_pair(self, symbol: str) -> Optional[dict]:
-        """Analyze a single forex pair for trading signals."""
+        """Analyze a single forex pair for trading signals.
+
+        BAR-CLOSE DISCIPLINE: Only uses fully closed candles.
+        The most recent candle on each timeframe is dropped because
+        it may still be forming. Indicators are computed on closed bars only.
+        """
         # Get candle data across timeframes
-        candles_h1 = self.broker.get_candles(symbol, "H1", 100)
-        candles_h4 = self.broker.get_candles(symbol, "H4", 50)
-        candles_d1 = self.broker.get_candles(symbol, "D", 30)
+        # Request extra candles so we still have enough after dropping the last
+        candles_h1_raw = self.broker.get_candles(symbol, "H1", 101)
+        candles_h4_raw = self.broker.get_candles(symbol, "H4", 51)
+        candles_d1_raw = self.broker.get_candles(symbol, "D", 31)
+
+        # Drop the last (potentially forming) candle on each timeframe
+        candles_h1 = candles_h1_raw[:-1] if len(candles_h1_raw) > 1 else candles_h1_raw
+        candles_h4 = candles_h4_raw[:-1] if len(candles_h4_raw) > 1 else candles_h4_raw
+        candles_d1 = candles_d1_raw[:-1] if len(candles_d1_raw) > 1 else candles_d1_raw
 
         if len(candles_h1) < 50 or len(candles_h4) < 20:
             return None

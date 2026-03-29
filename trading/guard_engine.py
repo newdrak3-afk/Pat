@@ -207,7 +207,7 @@ class GuardEngine:
 
         # ── 9. Position sizing ──
         from trading.brokers.oanda import CRYPTO_PAIRS
-        risk_pct = 0.02  # 2% risk per trade
+        risk_pct = 0.01  # 1% risk per trade (conservative for initial run)
         risk_amount = balance * risk_pct
         sl_distance = abs(signal.get("entry", 0) - signal.get("stop_loss", 0))
         is_crypto = symbol in CRYPTO_PAIRS

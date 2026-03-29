@@ -51,7 +51,7 @@ class FeatureToggles:
     data_quality_check: bool = False       # OFF for testing — weekend data triggers false alarms
 
     # ─── TRADING PARAMS ───
-    max_trades_per_cycle: int = 3          # Max new trades per scan cycle
+    max_trades_per_cycle: int = 2          # Max new trades per scan cycle (conservative)
     max_pairs_to_scan: int = 28            # How many forex pairs to scan
     scan_interval_seconds: int = 300       # Time between scans (5 min default)
 

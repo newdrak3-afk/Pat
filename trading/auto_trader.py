@@ -12,6 +12,7 @@ Architecture:
 - Settings: Runtime profiles (dev/paper/practice/live)
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -384,7 +385,7 @@ class AutoTrader:
                 signal=signal,
                 balance=balance,
                 open_trade_count=self.position_mgr.open_count,
-                max_open=5,
+                max_open=3,  # Conservative: max 3 open positions
             )
 
             if not approval.approved:
@@ -417,8 +418,27 @@ class AutoTrader:
                 )
                 continue
 
-            # Execute the trade
+            # Idempotency: generate deterministic order ID from signal
+            # Prevents duplicate orders on restarts, retries, or API timeouts
             units = approval.allowed_units
+            signal_key = f"{signal['symbol']}_{signal['side']}_{self._stats['cycles']}"
+            client_order_id = hashlib.sha256(signal_key.encode()).hexdigest()[:16]
+
+            # Check if we already placed this order
+            existing = self.db._execute(
+                "SELECT trade_id FROM trades WHERE trade_id = ?",
+                (client_order_id,), fetch="one", commit=False,
+            )
+            if existing:
+                logger.info(f"SKIP DUPLICATE: {signal['symbol']} already placed (id={client_order_id})")
+                continue
+
+            # Also skip if we already have an open position on this symbol
+            if any(t["symbol"] == signal["symbol"] for t in self.position_mgr.open_trades.values()):
+                logger.info(f"SKIP: Already have open position on {signal['symbol']}")
+                continue
+
+            # Execute the trade
             result = self.oanda.place_order_with_stops(
                 symbol=signal["symbol"],
                 side=signal["side"],

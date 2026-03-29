@@ -91,11 +91,17 @@ class OptionsScanner:
         return signals
 
     def _analyze_stock(self, symbol: str) -> Optional[dict]:
-        """Analyze a stock for options trading using HTF trend filter."""
-        # Get candles across timeframes
-        candles_h1 = self.broker.get_candles(symbol, "H1", 100)
-        candles_h4 = self.broker.get_candles(symbol, "H4", 50)
-        candles_d1 = self.broker.get_candles(symbol, "D", 30)
+        """Analyze a stock for options trading using HTF trend filter.
+
+        BAR-CLOSE DISCIPLINE: drops the last (forming) candle on each timeframe.
+        """
+        # Get candles — request extra, then drop the forming candle
+        raw_h1 = self.broker.get_candles(symbol, "H1", 101)
+        raw_h4 = self.broker.get_candles(symbol, "H4", 51)
+        raw_d1 = self.broker.get_candles(symbol, "D", 31)
+        candles_h1 = raw_h1[:-1] if len(raw_h1) > 1 else raw_h1
+        candles_h4 = raw_h4[:-1] if len(raw_h4) > 1 else raw_h4
+        candles_d1 = raw_d1[:-1] if len(raw_d1) > 1 else raw_d1
 
         if len(candles_h1) < 50 or len(candles_h4) < 20:
             return None
