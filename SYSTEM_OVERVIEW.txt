@@ -1,0 +1,41 @@
+CURRENT SYSTEM — Pat Trading Bot v3
+
+Broker: OANDA (practice account, $99,999 fake money)
+
+What it trades: Forex (28 pairs) + Crypto (10 pairs) = 38 total
+
+Architecture:
+- auto_trader.py — Main orchestrator (scan, guard, trade, monitor, learn)
+- guard_engine.py — Centralized trade approval (one pipeline, one verdict)
+- position_manager.py — Trade lifecycle (open, monitor, close, PnL)
+- forex_scanner.py — Finds signals using HTF trend filter (D1+H4 gate, H1 pullback entries)
+- session_awareness.py — Tags trades with Tokyo/London/NY session
+- telegram_bot.py — Full Telegram control (/resume, /pause, /kill, /safe, /mode, /why, etc)
+- settings.py — Runtime profiles (dev/paper/practice/live)
+- trade_db.py — SQLite database for all trades/signals/lessons
+- drawdown_guard.py — 10% max drawdown hard stop
+- drift_detector.py — Pauses if strategy is degrading
+- portfolio_manager.py — Per-currency exposure limits
+- calibration.py — Adjusts overconfident predictions
+- slippage_model.py — Execution cost modeling
+- regime_detector.py — Trending/ranging/volatile detection
+- data_quality.py — Validates candle data before trading
+- backtester.py — Historical backtest engine
+- monte_carlo.py — Risk of ruin simulation
+- notifier.py — Telegram alerts with units, dollar risk, reward, R:R ratio
+- loss_analyzer.py — Learns from losing trades
+
+Strategy:
+- D1 + H4 must agree on trend direction (hard gate)
+- H1 looks for pullback entries WITH the trend only
+- Countertrend trades blocked entirely
+- RSI, MACD, SMA20/50, volume confirmation on H1
+- 1.5x ATR stop loss, 2x ATR take profit (1:1.33 R:R)
+- 2% risk per trade, max 5 open positions
+- Confidence threshold 0.35 minimum
+
+Deployment: Railway (auto-deploys from GitHub master branch)
+Controls: Full Telegram bot with /commands
+
+WHAT WE WANT TO ADD:
+Options trading module (Mon-Fri, US market hours 9:30 AM - 4 PM ET). Need a broker with options API. Considering Alpaca (free paper trading). Would use the same HTF trend filter to buy calls (uptrend) or puts (downtrend) on stocks.
