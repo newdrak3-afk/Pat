@@ -270,4 +270,18 @@ class PositionManager:
 
     @property
     def open_count(self) -> int:
+        """Count open positions from broker (ground truth), fall back to in-memory."""
+        if self.oanda:
+            try:
+                positions = self.oanda.get_positions()
+                broker_count = len(positions)
+                # Sync in-memory count if broker disagrees
+                if broker_count != len(self.open_trades):
+                    logger.warning(
+                        f"Position count mismatch: broker={broker_count}, "
+                        f"memory={len(self.open_trades)}"
+                    )
+                return broker_count
+            except Exception:
+                pass
         return len(self.open_trades)
