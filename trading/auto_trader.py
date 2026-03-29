@@ -1,19 +1,15 @@
 """
-Auto Trader v2 — Enhanced with all protection layers.
+Auto Trader v3 — Refactored with GuardEngine + PositionManager.
 
-Flow: Connect → [Regime Check → Data Quality → Scan → Portfolio Check →
-       Drawdown Check → Drift Check → Slippage Adjust → Calibrate →
-       Risk Check → Execute → Log to DB → Monitor → Learn]
+Flow: Connect → Telegram Bot → Main Loop →
+      [Guard Cycle Check → Scan → GuardEngine.evaluate() →
+       Execute → PositionManager → Learn]
 
-New protections:
-- Regime detection (skip volatile/unfavorable regimes)
-- Data quality validation (reject bad candle data)
-- Portfolio exposure limits (max per-currency exposure)
-- Drawdown guard (hard stop on max drawdown)
-- Drift detector (pause if strategy degrading)
-- Slippage model (realistic cost accounting)
-- Calibration (adjust overconfident predictions)
-- SQLite database (structured trade logging)
+Architecture:
+- GuardEngine: Centralized trade approval (one pipeline, one verdict)
+- PositionManager: Trade lifecycle (open, monitor, close, notify)
+- SessionAwareness: Tags trades with active session
+- Settings: Runtime profiles (dev/paper/practice/live)
 """
 
 import json
@@ -22,7 +18,6 @@ import os
 import time
 from datetime import datetime
 from typing import Optional
-from uuid import uuid4
 
 from trading.config import SystemConfig
 from trading.settings import Settings
@@ -34,7 +29,7 @@ from trading.loss_analyzer import LossAnalyzer
 from trading.notifier import TelegramNotifier
 from trading.models import Market, Trade, Prediction, ResearchResult
 
-# New v2 modules
+# v2 modules
 from trading.trade_db import TradeDB
 from trading.regime_detector import RegimeDetector
 from trading.data_quality import DataQualityChecker
@@ -45,14 +40,20 @@ from trading.slippage_model import SlippageModel
 from trading.calibration import CalibrationLayer
 from trading.telegram_bot import TelegramBot
 
+# v3 modules
+from trading.guard_engine import GuardEngine
+from trading.position_manager import PositionManager
+from trading.session_awareness import tag_trade_session, get_current_session
+
 logger = logging.getLogger(__name__)
 
 
 class AutoTrader:
     """
-    Fully automated trading loop with all protection layers.
+    Fully automated trading loop.
 
-    Scans → Guards → Trades → Monitors → Learns → Repeats
+    v3: Orchestrates GuardEngine + PositionManager instead of inline guards.
+    Scans → Guard → Trade → Monitor → Learn → Repeat
     """
 
     def __init__(self, config: Optional[SystemConfig] = None):
@@ -79,23 +80,44 @@ class AutoTrader:
         self.slippage = SlippageModel()
         self.calibration = CalibrationLayer()
 
-        # Telegram command bot (listens for /commands)
+        # v3: Centralized guard engine
+        self.guard_engine = GuardEngine(
+            settings=self.settings,
+            oanda=self.oanda,
+            data_quality=self.data_quality,
+            regime=self.regime,
+            portfolio=self.portfolio,
+            calibration=self.calibration,
+            slippage=self.slippage,
+            drawdown=self.drawdown,
+            drift=self.drift,
+            db=self.db,
+        )
+
+        # v3: Position manager
+        self.position_mgr = PositionManager(
+            oanda=self.oanda,
+            db=self.db,
+            drawdown=self.drawdown,
+            drift=self.drift,
+            portfolio=self.portfolio,
+            calibration=self.calibration,
+            loss_analyzer=self.loss_analyzer,
+            risk_mgr=self.risk_mgr,
+            notifier=self.notifier,
+        )
+
+        # Telegram command bot
         self.telegram_bot = TelegramBot()
 
-        # State
-        self._trades: list[dict] = []
-        self._open_trades: dict[str, dict] = {}  # order_id -> trade info
+        # Stats
         self._stats = {
             "total_trades": 0,
             "wins": 0,
             "losses": 0,
             "total_pnl": 0.0,
             "cycles": 0,
-            "blocked_by_regime": 0,
-            "blocked_by_drawdown": 0,
-            "blocked_by_drift": 0,
-            "blocked_by_portfolio": 0,
-            "blocked_by_data_quality": 0,
+            "blocked_signals": 0,
         }
         self._load_state()
 
@@ -105,10 +127,11 @@ class AutoTrader:
         try:
             with open(state_file) as f:
                 data = json.load(f)
-                self._trades = data.get("trades", [])
                 saved_stats = data.get("stats", {})
                 self._stats.update(saved_stats)
-                self._open_trades = data.get("open_trades", {})
+                # Restore open trades to position manager
+                open_trades = data.get("open_trades", {})
+                self.position_mgr.open_trades = open_trades
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -118,9 +141,8 @@ class AutoTrader:
         os.makedirs(os.path.dirname(state_file), exist_ok=True)
         with open(state_file, "w") as f:
             json.dump({
-                "trades": self._trades[-200:],  # keep last 200
                 "stats": self._stats,
-                "open_trades": self._open_trades,
+                "open_trades": self.position_mgr.open_trades,
             }, f, indent=2)
 
     def start(self, scan_interval: int = 300):
@@ -129,14 +151,10 @@ class AutoTrader:
 
         Always starts the Telegram command bot first so you can
         control the system from your phone even when scanning is off.
-
-        Args:
-            scan_interval: Seconds between scans (default 5 min)
         """
-        # Use settings override if available
         scan_interval = self.settings.toggles.scan_interval_seconds or scan_interval
 
-        # Connect to OANDA first (needed for /balance, /positions, etc)
+        # Connect to OANDA first
         logger.info("Connecting to OANDA...")
         if not self.oanda.connect():
             self.notifier.send_system_alert(
@@ -172,9 +190,9 @@ class AutoTrader:
         self.telegram_bot.start()
 
         self.notifier.send_startup(balance, dry_run=not self.settings.toggles.auto_trading_enabled)
-        logger.info(f"Auto trader v2 started — Balance: ${balance:.2f}")
+        logger.info(f"Auto trader v3 started — Balance: ${balance:.2f}")
         logger.info(f"Scan interval: {scan_interval}s")
-        logger.info(f"Auto-trading: {'ON' if self.settings.toggles.auto_trading_enabled else 'OFF (alerts only)'}")
+        logger.info(f"Profile: {self.settings.toggles.runtime_profile}")
         logger.info(self.settings.get_status())
 
         if not self.settings.toggles.scanning_enabled:
@@ -187,15 +205,15 @@ class AutoTrader:
 
         # Main loop — always runs, checks settings each cycle
         while True:
-            # Re-check settings each cycle (allows live toggle from Telegram)
             self.settings = Settings()
-            # Keep telegram bot's settings reference updated
             self.telegram_bot._settings = self.settings
+            # Keep guard engine settings in sync
+            self.guard_engine.settings = self.settings
 
             if not self.settings.toggles.scanning_enabled:
                 logger.debug("Scanning disabled — waiting for /resume...")
                 try:
-                    time.sleep(10)  # Check every 10 sec so /resume responds fast
+                    time.sleep(10)
                 except KeyboardInterrupt:
                     logger.info("Shutting down...")
                     self.telegram_bot.stop()
@@ -221,40 +239,32 @@ class AutoTrader:
                 break
 
     def _run_cycle(self):
-        """Run one full cycle with all protection layers."""
+        """Run one full scan-guard-trade cycle."""
         self._stats["cycles"] += 1
         logger.info(f"\n{'='*50}")
         logger.info(f"CYCLE {self._stats['cycles']}")
         logger.info(f"{'='*50}")
 
-        # Step 0: Update balance and check guards
+        # Step 0: Update balance
         balance = self.oanda.get_account_balance()
         self.drawdown.update(balance)
 
-        # ── GUARD: Drawdown check ──
-        if self.settings.toggles.drawdown_guard_enabled:
-            can_trade, dd_reason = self.drawdown.can_trade()
-            if not can_trade:
-                logger.warning(f"DRAWDOWN GUARD: {dd_reason}")
-                self._stats["blocked_by_drawdown"] += 1
-                self.notifier.send_system_alert(f"Trading paused: {dd_reason}")
-                self._save_state()
-                return
+        # Step 1: Pre-cycle guard check (drawdown + drift)
+        can_proceed, reason = self.guard_engine.cycle_check()
+        if not can_proceed:
+            logger.warning(f"CYCLE BLOCKED: {reason}")
+            self.notifier.send_system_alert(f"Trading paused: {reason}")
+            self._save_state()
+            return
 
-        # ── GUARD: Drift check ──
-        if self.settings.toggles.drift_detector_enabled:
-            if self.drift.should_pause():
-                drifting, drift_reason = self.drift.is_drifting()
-                logger.warning(f"DRIFT DETECTOR: {drift_reason}")
-                self._stats["blocked_by_drift"] += 1
-                self.notifier.send_system_alert(f"Trading paused — strategy drift: {drift_reason}")
-                self._save_state()
-                return
+        # Step 2: Check open positions
+        close_result = self.position_mgr.check_positions()
+        if close_result["closed"] > 0:
+            self._stats["wins"] += close_result["wins"]
+            self._stats["losses"] += close_result["losses"]
+            self._stats["total_pnl"] += close_result["pnl"]
 
-        # Step 1: Check open positions and resolve completed trades
-        self._check_positions()
-
-        # Step 2: Scan for new signals
+        # Step 3: Scan for new signals
         signals = self.scanner.scan_all_pairs()
 
         if not signals:
@@ -270,141 +280,34 @@ class AutoTrader:
             self._save_state()
             return
 
-        # Step 3: Filter through all protection layers and trade
+        # Step 4: Run each signal through the guard engine
         trades_placed = 0
         trades_blocked = 0
         max_trades = self.settings.toggles.max_trades_per_cycle
 
-        for signal in signals[:5]:  # max 5 signals per cycle
+        for signal in signals[:5]:
             if trades_placed >= max_trades:
                 break
 
-            symbol = signal["symbol"]
-
-            # ── GUARD: Data quality ──
-            if self.settings.toggles.data_quality_check:
-                candles = self.oanda.get_candles(symbol, "H1", 50)
-                report = self.data_quality.validate_candles(candles)
-                if not report.is_valid:
-                    logger.info(f"DATA QUALITY: {symbol} failed — {report.issues}")
-                    self._stats["blocked_by_data_quality"] += 1
-                    # Log skipped signal to DB
-                    self.db.save_signal(
-                        symbol=symbol, side=signal["side"],
-                        confidence=signal["confidence"],
-                        entry=signal["entry"],
-                        sl=signal["stop_loss"], tp=signal["take_profit"],
-                        taken=False, reason_skipped="Data quality check failed",
-                    )
-                    trades_blocked += 1
-                    continue
-
-            # ── GUARD: Regime detection ──
-            if self.settings.toggles.regime_detection_enabled:
-                candles = self.oanda.get_candles(symbol, "H1", 100)
-                regime_info = self.regime.detect_regime(candles)
-                if not self.regime.should_trade(regime_info):
-                    logger.info(
-                        f"REGIME: {symbol} in {regime_info.regime.value} — skipping"
-                    )
-                    self._stats["blocked_by_regime"] += 1
-                    self.db.save_signal(
-                        symbol=symbol, side=signal["side"],
-                        confidence=signal["confidence"],
-                        entry=signal["entry"],
-                        sl=signal["stop_loss"], tp=signal["take_profit"],
-                        taken=False,
-                        reason_skipped=f"Unfavorable regime: {regime_info.regime.value}",
-                    )
-                    trades_blocked += 1
-                    continue
-
-            # ── GUARD: Portfolio exposure ──
-            if self.settings.toggles.portfolio_manager_enabled:
-                can_add, port_reason = self.portfolio.can_add_position(
-                    symbol, signal["side"], signal.get("units", 1000), balance
-                )
-                if not can_add:
-                    logger.info(f"PORTFOLIO: {symbol} blocked — {port_reason}")
-                    self._stats["blocked_by_portfolio"] += 1
-                    self.db.save_signal(
-                        symbol=symbol, side=signal["side"],
-                        confidence=signal["confidence"],
-                        entry=signal["entry"],
-                        sl=signal["stop_loss"], tp=signal["take_profit"],
-                        taken=False, reason_skipped=f"Portfolio: {port_reason}",
-                    )
-                    trades_blocked += 1
-                    continue
-
-            # ── ADJUST: Calibration ──
-            raw_confidence = signal["confidence"]
-            if self.settings.toggles.calibration_enabled:
-                calibrated = self.calibration.calibrate(raw_confidence)
-                signal["confidence"] = calibrated
-                if calibrated < 0.15:  # Below minimum threshold after calibration
-                    logger.info(
-                        f"CALIBRATION: {symbol} confidence dropped "
-                        f"{raw_confidence:.2f} → {calibrated:.2f} — skipping"
-                    )
-                    trades_blocked += 1
-                    continue
-
-            # ── ADJUST: Slippage costs ──
-            if self.settings.toggles.slippage_model_enabled:
-                units = signal.get("units", 1000)
-                costs = self.slippage.estimate_costs(
-                    symbol, units, signal["side"],
-                    spread_pips=signal.get("spread_pips", 1.5),
-                )
-                adj_sl, adj_tp = self.slippage.adjust_targets(
-                    signal["entry"], signal["stop_loss"],
-                    signal["take_profit"], signal["side"], costs,
-                )
-                signal["stop_loss"] = adj_sl
-                signal["take_profit"] = adj_tp
-
-            # Convert signal to Prediction for risk manager
-            prediction = Prediction(
-                market_id=signal["symbol"],
-                market_question=f"Forex: {signal['symbol']} {signal['side'].upper()}",
-                market_price=signal["entry"],
-                predicted_probability=signal["confidence"],
-                confidence=signal["confidence"],
-                edge=signal["confidence"] - 0.5,
-                recommended_side=signal["side"],
-                reasoning=signal["reasoning"],
+            # Run all guards via GuardEngine
+            approval = self.guard_engine.evaluate(
+                signal=signal,
+                balance=balance,
+                open_trade_count=self.position_mgr.open_count,
+                max_open=5,
             )
 
-            market = Market(
-                market_id=signal["symbol"],
-                question=f"Forex: {signal['symbol']}",
-                category="forex",
-                current_price=signal["entry"],
-                liquidity=100000,
-                spread=0,
-            )
-
-            # ── GUARD: Risk check ──
-            # Skip Kelly-based risk manager for forex (designed for binary markets)
-            # Forex risk is handled by: position sizing (2% rule), drawdown guard,
-            # portfolio manager, and SL/TP on every trade
-            open_count = len(self._open_trades)
-            if open_count >= 5:
-                logger.info(f"RISK: {signal['symbol']} — max 5 open positions")
-                self.db.save_signal(
-                    symbol=symbol, side=signal["side"],
-                    confidence=signal["confidence"],
-                    entry=signal["entry"],
-                    sl=signal["stop_loss"], tp=signal["take_profit"],
-                    taken=False, reason_skipped="Max open positions (5)",
-                )
+            if not approval.approved:
+                logger.info(f"BLOCKED: {signal['symbol']} — {approval.summary()}")
                 trades_blocked += 1
+                self._stats["blocked_signals"] += 1
                 continue
 
-            # ── Check if auto-trading is enabled ──
+            # Update signal with guard adjustments
+            signal["confidence"] = approval.adjusted_confidence
+
+            # Check auto-trading toggle
             if not self.settings.toggles.auto_trading_enabled:
-                # Alert-only mode: send signal but don't place trade
                 self.notifier.send_forex_alert(
                     symbol=signal["symbol"],
                     side=signal["side"],
@@ -416,33 +319,16 @@ class AutoTrader:
                     reasoning=f"[ALERT ONLY] {signal['reasoning']}",
                 )
                 self.db.save_signal(
-                    symbol=symbol, side=signal["side"],
+                    symbol=signal["symbol"], side=signal["side"],
                     confidence=signal["confidence"],
                     entry=signal["entry"],
                     sl=signal["stop_loss"], tp=signal["take_profit"],
                     taken=False, reason_skipped="Auto-trading disabled (alert only)",
                 )
-                logger.info(f"ALERT ONLY: {signal['side']} {symbol} @ {signal['entry']}")
                 continue
 
-            # ── EXECUTE: Place the trade ──
-            from trading.brokers.oanda import CRYPTO_PAIRS
-            balance = self.oanda.get_account_balance()
-            risk_amount = balance * self.config.risk.max_bet_pct
-            sl_distance = abs(signal["entry"] - signal["stop_loss"])
-            is_crypto = signal["symbol"] in CRYPTO_PAIRS
-
-            if sl_distance > 0:
-                units = int(risk_amount / sl_distance)
-                if is_crypto:
-                    # Crypto: small units (fractions of BTC)
-                    units = max(1, min(units, 5))
-                else:
-                    # Forex: larger units
-                    units = max(1, min(units, 10000))
-            else:
-                units = 1 if is_crypto else 1000
-
+            # Execute the trade
+            units = approval.allowed_units
             result = self.oanda.place_order_with_stops(
                 symbol=signal["symbol"],
                 side=signal["side"],
@@ -452,9 +338,8 @@ class AutoTrader:
             )
 
             if result.success:
-                trade_id = result.order_id
                 trade_info = {
-                    "trade_id": trade_id,
+                    "trade_id": result.order_id,
                     "symbol": signal["symbol"],
                     "side": signal["side"],
                     "units": units,
@@ -462,41 +347,20 @@ class AutoTrader:
                     "stop_loss": signal["stop_loss"],
                     "take_profit": signal["take_profit"],
                     "confidence": signal["confidence"],
-                    "raw_confidence": raw_confidence,
+                    "raw_confidence": signal.get("raw_confidence", signal["confidence"]),
                     "reasoning": signal["reasoning"],
                     "placed_at": datetime.utcnow().isoformat(),
                     "status": "open",
                 }
 
-                self._open_trades[trade_id] = trade_info
-                self._trades.append(trade_info)
+                # Tag with session info
+                tag_trade_session(trade_info)
+
+                # Register with position manager (handles DB, portfolio, etc)
+                self.position_mgr.add_trade(trade_info)
+
                 self._stats["total_trades"] += 1
                 trades_placed += 1
-
-                # Track in portfolio manager
-                self.portfolio.add_position(symbol, signal["side"], units, result.price)
-
-                # Log to SQLite DB
-                self.db.save_trade(
-                    trade_id=trade_id,
-                    symbol=symbol,
-                    side=signal["side"],
-                    units=units,
-                    entry_price=result.price,
-                    stop_loss=signal["stop_loss"],
-                    take_profit=signal["take_profit"],
-                    confidence=signal["confidence"],
-                    reasoning=signal["reasoning"],
-                )
-
-                # Log signal as taken
-                self.db.save_signal(
-                    symbol=symbol, side=signal["side"],
-                    confidence=signal["confidence"],
-                    entry=signal["entry"],
-                    sl=signal["stop_loss"], tp=signal["take_profit"],
-                    taken=True, reason_skipped="",
-                )
 
                 # Notify
                 self.notifier.send_forex_alert(
@@ -512,13 +376,11 @@ class AutoTrader:
 
                 logger.info(
                     f"TRADE PLACED: {signal['side'].upper()} "
-                    f"{signal['symbol']} {units} units @ {result.price}"
+                    f"{signal['symbol']} {units} units @ {result.price} "
+                    f"[{trade_info.get('session', 'unknown')}]"
                 )
-
             else:
-                logger.warning(
-                    f"Order failed for {signal['symbol']}: {result.message}"
-                )
+                logger.warning(f"Order failed for {signal['symbol']}: {result.message}")
 
         # Summary
         from trading.brokers.oanda import ALL_PAIRS
@@ -532,188 +394,29 @@ class AutoTrader:
 
         self._save_state()
 
-    def _check_positions(self):
-        """Check open positions and resolve completed trades."""
-        if not self._open_trades:
-            return
-
-        positions = self.oanda.get_positions()
-        open_symbols = {p.symbol for p in positions}
-
-        closed_trade_ids = []
-
-        for trade_id, trade_info in self._open_trades.items():
-            symbol = trade_info["symbol"]
-
-            if symbol not in open_symbols:
-                closed_trade_ids.append(trade_id)
-
-                quote = self.oanda.get_quote(symbol)
-                current = quote.mid if quote else trade_info["entry"]
-
-                entry = trade_info["entry"]
-                side = trade_info["side"]
-                units = trade_info["units"]
-
-                tp = trade_info["take_profit"]
-                sl = trade_info["stop_loss"]
-
-                if side == "buy":
-                    if current >= tp:
-                        outcome = "win"
-                        pnl = abs(tp - entry) * units
-                    else:
-                        outcome = "loss"
-                        pnl = -abs(entry - sl) * units
-                else:
-                    if current <= tp:
-                        outcome = "win"
-                        pnl = abs(entry - tp) * units
-                    else:
-                        outcome = "loss"
-                        pnl = -abs(sl - entry) * units
-
-                trade_info["status"] = outcome
-                trade_info["pnl"] = pnl
-                trade_info["closed_at"] = datetime.utcnow().isoformat()
-
-                # Update DB
-                self.db.update_trade(
-                    trade_id=trade_id,
-                    exit_price=current,
-                    outcome=outcome,
-                    pnl=pnl,
-                )
-
-                # Update drift detector
-                self.drift.add_result(outcome, pnl)
-
-                # Update calibration with actual outcome
-                self.calibration.add_outcome(
-                    trade_info.get("raw_confidence", trade_info["confidence"]),
-                    1 if outcome == "win" else 0,
-                )
-
-                # Update drawdown
-                balance = self.oanda.get_account_balance()
-                self.drawdown.update(balance)
-
-                # Remove from portfolio
-                self.portfolio.remove_position(symbol)
-
-                if outcome == "win":
-                    self._stats["wins"] += 1
-                    self._stats["total_pnl"] += pnl
-
-                    trade_obj = Trade(
-                        trade_id=trade_id,
-                        market_id=symbol,
-                        market_question=f"Forex: {symbol}",
-                        side=side,
-                        amount=abs(pnl),
-                        entry_price=entry,
-                        pnl=pnl,
-                        outcome="win",
-                    )
-                    self.notifier.send_win_alert(trade_obj, pnl, balance)
-                    logger.info(f"WIN: {symbol} +${pnl:.2f}")
-
-                else:
-                    self._stats["losses"] += 1
-                    self._stats["total_pnl"] += pnl
-
-                    trade_obj = Trade(
-                        trade_id=trade_id,
-                        market_id=symbol,
-                        market_question=f"Forex: {symbol}",
-                        side=side,
-                        amount=abs(pnl),
-                        entry_price=entry,
-                        pnl=pnl,
-                        outcome="loss",
-                    )
-
-                    market = Market(
-                        market_id=symbol,
-                        question=f"Forex: {symbol}",
-                        category="forex",
-                        current_price=current,
-                    )
-
-                    research = ResearchResult(market_id=symbol)
-                    prediction = Prediction(
-                        market_id=symbol,
-                        market_price=entry,
-                        predicted_probability=trade_info["confidence"],
-                        confidence=trade_info["confidence"],
-                    )
-
-                    lesson = self.loss_analyzer.analyze_loss(
-                        trade_obj, market, research, prediction
-                    )
-
-                    # Save lesson to DB
-                    self.db.save_lesson(
-                        trade_id=trade_id,
-                        category=lesson.category,
-                        description=lesson.description,
-                        rule_added=lesson.rule_added,
-                    )
-
-                    self.notifier.send_loss_alert(
-                        trade_obj, pnl, balance, lesson.description
-                    )
-
-                    logger.info(
-                        f"LOSS: {symbol} -${abs(pnl):.2f} | "
-                        f"Lesson: {lesson.category} — {lesson.rule_added}"
-                    )
-
-                    self.risk_mgr.resolve_trade(trade_id, pnl)
-
-        for tid in closed_trade_ids:
-            del self._open_trades[tid]
-
-        # Save daily stats
-        if self._stats["total_trades"] > 0:
-            balance = self.oanda.get_account_balance()
-            dd_info = self.drawdown.get_drawdown_info()
-            self.db.save_daily_stats(
-                total_trades=self._stats["total_trades"],
-                wins=self._stats["wins"],
-                losses=self._stats["losses"],
-                pnl=self._stats["total_pnl"],
-                max_drawdown=dd_info.max_drawdown_pct_seen,
-                balance=balance,
-            )
-
-        self._save_state()
-
     def get_status(self) -> str:
-        """Get current auto trader status with all guard statuses."""
+        """Get current auto trader status."""
         total = self._stats["wins"] + self._stats["losses"]
         win_rate = (self._stats["wins"] / total * 100) if total > 0 else 0
         balance = self.oanda.get_account_balance() if self.oanda.connected else 0
+        session = get_current_session()
 
         lines = [
             "╔══════════════════════════════════════╗",
-            "║     AUTO TRADER v2 STATUS            ║",
+            "║     AUTO TRADER v3 STATUS            ║",
             "╚══════════════════════════════════════╝",
             "",
+            f"  Profile:       {self.settings.toggles.runtime_profile}",
+            f"  Session:       {session.primary.replace('_', ' ').title()}",
+            f"  Liquidity:     {session.liquidity.upper()}",
             f"  Balance:       ${balance:,.2f}",
             f"  Cycles:        {self._stats['cycles']}",
             f"  Total Trades:  {self._stats['total_trades']}",
             f"  Wins/Losses:   {self._stats['wins']}/{self._stats['losses']}",
             f"  Win Rate:      {win_rate:.0f}%",
             f"  Total PnL:     ${self._stats['total_pnl']:+,.2f}",
-            f"  Open Trades:   {len(self._open_trades)}",
-            "",
-            "  ── Guards ──",
-            f"  Blocked by Regime:     {self._stats.get('blocked_by_regime', 0)}",
-            f"  Blocked by Drawdown:   {self._stats.get('blocked_by_drawdown', 0)}",
-            f"  Blocked by Drift:      {self._stats.get('blocked_by_drift', 0)}",
-            f"  Blocked by Portfolio:  {self._stats.get('blocked_by_portfolio', 0)}",
-            f"  Blocked by Data:       {self._stats.get('blocked_by_data_quality', 0)}",
+            f"  Open Trades:   {self.position_mgr.open_count}",
+            f"  Blocked:       {self._stats.get('blocked_signals', 0)}",
             "",
         ]
 
