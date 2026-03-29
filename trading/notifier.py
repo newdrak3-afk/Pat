@@ -266,16 +266,27 @@ class TelegramNotifier:
         direction = "BUY (Long)" if side == "buy" else "SELL (Short)"
         pair = symbol.replace("_", "/")
 
+        # Calculate dollar risk
+        sl_distance = abs(entry_price - stop_loss)
+        tp_distance = abs(take_profit - entry_price)
+        risk_dollars = sl_distance * units
+        reward_dollars = tp_distance * units
+        rr_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+
         msg = (
             f"<b>FOREX ALERT</b>\n"
             f"\n"
             f"<b>{pair} — {direction}</b>\n"
             f"\n"
-            f"Hit %: <b>{hit_pct:.0f}%</b>\n"
+            f"Confidence: <b>{hit_pct:.0f}%</b>\n"
             f"Entry: <b>{entry_price:.5f}</b>\n"
             f"Stop Loss: <b>{stop_loss:.5f}</b>\n"
             f"Take Profit: <b>{take_profit:.5f}</b>\n"
+            f"\n"
             f"Units: <b>{units:,.0f}</b>\n"
+            f"Risk: <b>${risk_dollars:,.2f}</b>\n"
+            f"Reward: <b>${reward_dollars:,.2f}</b>\n"
+            f"R:R: <b>1:{rr_ratio:.1f}</b>\n"
             f"\n"
             f"{reasoning[:300]}"
         )
