@@ -53,6 +53,7 @@ class TelegramBot:
         self._thread: Optional[threading.Thread] = None
 
         # These get set by the auto_trader after init
+        self._options_trader = None
         self._settings = None
         self._oanda = None
         self._scanner = None
@@ -192,6 +193,7 @@ class TelegramBot:
             "/mode": self._cmd_mode,
             "/session": self._cmd_session,
             "/why": self._cmd_why,
+            "/options": self._cmd_options,
         }
 
         handler = handlers.get(cmd)
@@ -231,7 +233,8 @@ class TelegramBot:
             "/pause — Pause everything\n"
             "/resume — Resume all\n"
             "/set key value — Change a setting\n"
-            "/mode [dev|paper|practice|live] — Switch profile\n\n"
+            "/mode [dev|paper|practice|live] — Switch profile\n"
+            "/options — Options trader status\n\n"
             "<b>Emergency:</b>\n"
             "/kill — STOP everything immediately\n"
             "/safe — Safe mode (close all, stop trading)\n\n"
@@ -638,6 +641,22 @@ class TelegramBot:
         """Show current trading session info."""
         from trading.session_awareness import get_session_status
         self._send(f"<pre>{get_session_status()}</pre>")
+
+    def _cmd_options(self, args):
+        """Show options trader status."""
+        if self._options_trader:
+            status = self._options_trader.get_status()
+            self._send(f"<pre>{status}</pre>")
+        else:
+            self._send(
+                "Options module not active.\n\n"
+                "To enable:\n"
+                "1. Get Alpaca API key (alpaca.markets)\n"
+                "2. Set ALPACA_API_KEY and ALPACA_SECRET_KEY\n"
+                "3. Redeploy the bot\n\n"
+                "Symbols: SPY, QQQ, AAPL, MSFT, NVDA\n"
+                "Hours: Mon-Fri 9:45 AM - 3:45 PM ET"
+            )
 
     def _cmd_why(self, args):
         """Show why the last signal(s) were blocked."""

@@ -211,16 +211,29 @@ def cmd_backtest(orch: Orchestrator):
 
 
 def cmd_auto(orch: Orchestrator):
-    """Run auto-trader on OANDA practice account."""
+    """Run auto-trader on OANDA practice + Alpaca options."""
+    import threading
     from trading.auto_trader import AutoTrader
 
-    print("\n--- AUTO TRADER v2 (OANDA Practice) ---")
-    print("Enhanced with: regime detection, drawdown guard,")
-    print("drift detector, portfolio manager, calibration,")
-    print("slippage model, data quality checks, SQLite logging")
+    print("\n--- AUTO TRADER v3 (OANDA + Alpaca Options) ---")
+    print("Forex: OANDA practice | Options: Alpaca paper")
+    print("HTF trend filter | Guard engine | Session awareness")
     print("No real money. The bot learns from every loss.\n")
 
     trader = AutoTrader(orch.config)
+
+    # Start options trader in background if Alpaca is configured
+    if os.getenv("ALPACA_API_KEY"):
+        from trading.options_trader import OptionsTrader
+        options = OptionsTrader(orch.config)
+        # Wire options trader into telegram bot
+        trader.telegram_bot._options_trader = options
+        options_thread = threading.Thread(target=options.start, daemon=True)
+        options_thread.start()
+        print("Options trader started (Alpaca)")
+    else:
+        print("Options: disabled (no ALPACA_API_KEY)")
+
     print(trader.get_status())
     trader.start(scan_interval=orch.config.scan_interval_seconds)
 
