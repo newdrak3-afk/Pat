@@ -440,25 +440,35 @@ class AutoTrader:
         lines = [self.get_status(), ""]
 
         # DB performance summary
-        summary = self.db.get_performance_summary()
-        if summary:
+        try:
+            summary = self.db.get_performance_summary() or {}
+            total = summary.get("total_trades") or 0
+            win_rate = summary.get("win_rate") or 0
+            total_pnl = summary.get("total_pnl") or 0
             lines.extend([
                 "  ── Database Stats ──",
-                f"  DB Trades:     {summary.get('total_trades', 0)}",
-                f"  DB Win Rate:   {summary.get('win_rate', 0):.0%}",
-                f"  DB Total PnL:  ${summary.get('total_pnl', 0):+,.2f}",
+                f"  DB Trades:     {total}",
+                f"  DB Win Rate:   {win_rate:.0%}",
+                f"  DB Total PnL:  ${total_pnl:+,.2f}",
                 "",
             ])
+        except Exception:
+            lines.append("  DB Stats: No data yet\n")
 
         # Calibration stats
-        cal_stats = self.calibration.get_calibration_stats()
-        if cal_stats.get("total_samples", 0) > 0:
-            lines.extend([
-                "  ── Calibration ──",
-                f"  Samples:       {cal_stats['total_samples']}",
-                f"  Brier Score:   {cal_stats.get('brier_score', 0):.4f}",
-                f"  Overconfident: {'Yes' if self.calibration.is_overconfident() else 'No'}",
-                "",
-            ])
+        try:
+            cal_stats = self.calibration.get_calibration_stats() or {}
+            samples = cal_stats.get("total_samples") or 0
+            if samples > 0:
+                brier = cal_stats.get("brier_score") or 0
+                lines.extend([
+                    "  ── Calibration ──",
+                    f"  Samples:       {samples}",
+                    f"  Brier Score:   {brier:.4f}",
+                    f"  Overconfident: {'Yes' if self.calibration.is_overconfident() else 'No'}",
+                    "",
+                ])
+        except Exception:
+            pass
 
         return "\n".join(lines)
