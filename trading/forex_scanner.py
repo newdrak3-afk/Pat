@@ -6,13 +6,37 @@ Uses OANDA candlestick data + technical analysis to find setups.
 
 import logging
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from trading.brokers.oanda import OandaBroker, FOREX_PAIRS, CRYPTO_PAIRS, ALL_PAIRS
 from trading.brokers.base import Quote
 
 logger = logging.getLogger(__name__)
+
+
+def is_forex_market_open(now: datetime = None) -> bool:
+    """
+    Check if the forex market is open.
+
+    Forex trades 24/5: opens Sunday 5 PM ET (22:00 UTC), closes Friday 5 PM ET (22:00 UTC).
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+    hour = now.hour
+
+    # Friday after 22:00 UTC → closed
+    if weekday == 4 and hour >= 22:
+        return False
+    # All of Saturday → closed
+    if weekday == 5:
+        return False
+    # Sunday before 22:00 UTC → closed
+    if weekday == 6 and hour < 22:
+        return False
+
+    return True
 
 
 class ForexScanner:
@@ -30,10 +54,10 @@ class ForexScanner:
 
     def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
         """
-        Scan all pairs and return signals.
+        Scan pairs and return signals.
 
-        Auto-detects weekend: skips forex (closed), scans crypto (24/7).
-        On weekdays: scans both forex and crypto.
+        Only scans forex when the market is open.
+        Crypto is 24/7 but OANDA practice may not support execution.
 
         Returns list of dicts with:
         - symbol, side, confidence, entry, stop_loss, take_profit, reasoning
@@ -42,9 +66,18 @@ class ForexScanner:
             logger.warning("OANDA not connected — skipping scan")
             return []
 
-        # Always scan everything — forex candle history works even on weekends
-        # (generates signals from recent H1/H4 data before market closed)
-        pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
+        forex_open = is_forex_market_open()
+
+        if forex_open:
+            pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
+        else:
+            # Market closed — only scan crypto (24/7)
+            pairs = CRYPTO_PAIRS if include_crypto else []
+            if not pairs:
+                logger.info("Forex market closed, no crypto pairs — skipping scan")
+                return []
+            logger.info("Forex market closed — scanning crypto only")
+
         logger.info(f"Scanning {len(pairs)} pairs...")
 
         if not pairs:
