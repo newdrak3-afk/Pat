@@ -1,16 +1,26 @@
 CURRENT SYSTEM — Pat Trading Bot v3
 
-Broker: OANDA (practice account, $99,999 fake money)
+GitHub: github.com/newdrak3-afk/Pat
 
-What it trades: Forex (28 pairs) + Crypto (10 pairs) = 38 total
+TWO BROKERS RUNNING:
+1. OANDA (forex practice account, $99,999 fake money)
+2. Alpaca (stock options paper trading)
 
-Architecture:
-- auto_trader.py — Main orchestrator (scan, guard, trade, monitor, learn)
+WHAT IT TRADES:
+- Forex: 28 currency pairs (Mon-Fri, Sun 5PM - Fri 5PM ET)
+- Crypto: 10 pairs (24/7 via OANDA)
+- Options: SPY, QQQ, AAPL, MSFT, NVDA (Mon-Fri 9:45AM - 3:45PM ET)
+
+ARCHITECTURE:
+- auto_trader.py — Main forex orchestrator (scan, guard, trade, monitor, learn)
+- options_trader.py — Separate options trading loop (different broker, different rules)
 - guard_engine.py — Centralized trade approval (one pipeline, one verdict)
 - position_manager.py — Trade lifecycle (open, monitor, close, PnL)
-- forex_scanner.py — Finds signals using HTF trend filter (D1+H4 gate, H1 pullback entries)
+- forex_scanner.py — Finds forex signals using HTF trend filter (D1+H4 gate, H1 pullback entries)
+- options_scanner.py — Finds stock options signals using same HTF trend filter on underlying
+- options_contract_selector.py — Picks best contract (7-14 DTE, near ATM, min OI, max spread)
 - session_awareness.py — Tags trades with Tokyo/London/NY session
-- telegram_bot.py — Full Telegram control (/resume, /pause, /kill, /safe, /mode, /why, etc)
+- telegram_bot.py — Full Telegram control with 20+ commands
 - settings.py — Runtime profiles (dev/paper/practice/live)
 - trade_db.py — SQLite database for all trades/signals/lessons
 - drawdown_guard.py — 10% max drawdown hard stop
@@ -24,8 +34,11 @@ Architecture:
 - monte_carlo.py — Risk of ruin simulation
 - notifier.py — Telegram alerts with units, dollar risk, reward, R:R ratio
 - loss_analyzer.py — Learns from losing trades
+- brokers/base.py — Broker-agnostic interface (BaseBroker)
+- brokers/oanda.py — OANDA forex/crypto implementation
+- brokers/alpaca.py — Alpaca stocks/options implementation
 
-Strategy:
+FOREX STRATEGY:
 - D1 + H4 must agree on trend direction (hard gate)
 - H1 looks for pullback entries WITH the trend only
 - Countertrend trades blocked entirely
@@ -33,9 +46,40 @@ Strategy:
 - 1.5x ATR stop loss, 2x ATR take profit (1:1.33 R:R)
 - 2% risk per trade, max 5 open positions
 - Confidence threshold 0.35 minimum
+- Skips scanning when forex market is closed
 
-Deployment: Railway (auto-deploys from GitHub master branch)
-Controls: Full Telegram bot with /commands
+OPTIONS STRATEGY:
+- Same HTF trend filter on underlying stock (D1+H4 gate)
+- Calls in uptrend, puts in downtrend
+- Contract selection: 7-14 DTE, near ATM, min 100 open interest, max 15% spread
+- Max $500 premium per trade
+- Exit at 50% profit or 40% loss on premium
+- Force close 2 days before expiry
+- Max 3 open option positions
+- No trading first/last 15 min of market
+- Limit orders only (not market orders)
 
-WHAT WE WANT TO ADD:
-Options trading module (Mon-Fri, US market hours 9:30 AM - 4 PM ET). Need a broker with options API. Considering Alpaca (free paper trading). Would use the same HTF trend filter to buy calls (uptrend) or puts (downtrend) on stocks.
+GUARDS (shared):
+- Drawdown guard (10% max drawdown hard stop)
+- Drift detector (pauses if win rate dropping)
+- Portfolio manager (per-currency exposure caps)
+- Regime detector (skip volatile/choppy markets)
+- Data quality checker (reject stale/bad candle data)
+- Calibration layer (fix overconfident predictions)
+- Slippage model (account for execution costs)
+
+TELEGRAM COMMANDS:
+/status /balance /positions /history /report /lessons
+/scan /trade /crypto /options /pause /resume
+/kill /safe /mode /session /why
+/guards /drawdown /drift /exposure /settings /set
+
+DEPLOYMENT: Railway (auto-deploys from GitHub master branch)
+
+WHAT WORKS RIGHT NOW:
+- Bot is online on Railway
+- OANDA connected ($99,999 practice)
+- Alpaca connected (paper trading)
+- Telegram commands all working
+- Forex starts trading tonight (Sun 5PM ET)
+- Options start trading Monday (9:45AM ET)
