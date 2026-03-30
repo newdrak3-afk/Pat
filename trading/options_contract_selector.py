@@ -43,20 +43,21 @@ class ContractSelector:
     """
     Selects optimal option contracts for trading.
 
-    Rules (v1 - conservative):
-    - 7-14 DTE only
-    - Near ATM or 1 strike ITM
-    - Min 100 open interest
-    - Max 15% bid/ask spread
+    Rules (v2 - ChatGPT tuned):
+    - 10-21 DTE (more theta cushion)
+    - Near ATM, delta ~0.35-0.55
+    - Min 200 OI on single names, 100 on SPY/QQQ
+    - Max 10% bid/ask spread (tightened from 15%)
     - Calls for uptrend, puts for downtrend
+    - Prioritize SPY/QQQ first
     """
 
     def __init__(
         self,
-        min_dte: int = 7,
-        max_dte: int = 14,
-        max_spread_pct: float = 0.15,
-        min_open_interest: int = 100,
+        min_dte: int = 10,
+        max_dte: int = 21,
+        max_spread_pct: float = 0.10,
+        min_open_interest: int = 200,
         min_volume: int = 10,
         max_premium: float = 500.0,
     ):
