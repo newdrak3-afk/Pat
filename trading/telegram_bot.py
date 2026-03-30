@@ -204,7 +204,6 @@ class TelegramBot:
             "/why": self._cmd_why,
             "/options": self._cmd_options,
             "/heartbeat": self._cmd_heartbeat,
-            "/news": self._cmd_news,
         }
 
         handler = handlers.get(cmd)
@@ -245,9 +244,7 @@ class TelegramBot:
             "/resume — Resume all\n"
             "/set key value — Change a setting\n"
             "/mode [dev|paper|practice|live] — Switch profile\n"
-            "/options — Options trader status\n"
-            "/news — Market news & sentiment\n"
-            "/news EUR_USD — News for a pair\n\n"
+            "/options — Options trader status\n\n"
             "<b>Emergency:</b>\n"
             "/kill — STOP everything immediately\n"
             "/safe — Safe mode (close all, stop trading)\n\n"
