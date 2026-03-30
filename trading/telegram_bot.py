@@ -203,6 +203,7 @@ class TelegramBot:
             "/session": self._cmd_session,
             "/why": self._cmd_why,
             "/options": self._cmd_options,
+            "/testoptions": self._cmd_testoptions,
             "/heartbeat": self._cmd_heartbeat,
         }
 
@@ -685,6 +686,71 @@ class TelegramBot:
                 "Symbols: SPY, QQQ, AAPL, MSFT, NVDA\n"
                 "Hours: Mon-Fri 9:45 AM - 3:45 PM ET"
             )
+
+    def _cmd_testoptions(self, args):
+        """Test Alpaca connection and options data flow."""
+        if not self._options_trader:
+            self._send("Options trader not loaded. Check ALPACA_API_KEY env var.")
+            return
+
+        lines = ["<b>OPTIONS DIAGNOSTIC</b>\n"]
+
+        # 1. Connection
+        broker = self._options_trader.broker
+        if not broker.connected:
+            connected = broker.connect()
+            lines.append(f"Alpaca connect: {'OK' if connected else 'FAILED'}")
+            if not connected:
+                self._send("\n".join(lines))
+                return
+        else:
+            lines.append("Alpaca connect: OK (already connected)")
+
+        # 2. Balance
+        balance = broker.get_account_balance()
+        lines.append(f"Balance: ${balance:,.2f}")
+
+        # 3. Market status
+        market_open = broker.is_market_open()
+        lines.append(f"Market open: {'YES' if market_open else 'NO'}")
+
+        from trading.options_scanner import is_options_market_open
+        opts_open = is_options_market_open()
+        lines.append(f"Options hours: {'YES' if opts_open else 'NO (9:45-3:45 ET Mon-Fri)'}")
+
+        # 4. Test candle data for SPY
+        for symbol in ["SPY", "QQQ"]:
+            candles_d1 = broker.get_candles(symbol, "1Day", 5)
+            candles_h1 = broker.get_candles(symbol, "1Hour", 5)
+            candles_h4 = broker.get_candles(symbol, "4Hour", 5)
+            lines.append(f"\n{symbol} candles:")
+            lines.append(f"  D1: {len(candles_d1)} bars")
+            lines.append(f"  H4: {len(candles_h4)} bars")
+            lines.append(f"  H1: {len(candles_h1)} bars")
+            if candles_d1:
+                last = candles_d1[-1]
+                lines.append(f"  Last D1: O={last['open']:.2f} H={last['high']:.2f} L={last['low']:.2f} C={last['close']:.2f}")
+
+        # 5. Test quote
+        quote = broker.get_quote("SPY")
+        if quote:
+            lines.append(f"\nSPY quote: bid={quote.bid:.2f} ask={quote.ask:.2f} mid={quote.mid:.2f}")
+        else:
+            lines.append("\nSPY quote: FAILED")
+
+        # 6. Test options chain
+        chain = broker.get_options_chain("SPY")
+        if chain:
+            with_quotes = sum(1 for c in chain if c.bid > 0)
+            lines.append(f"SPY options chain: {len(chain)} contracts, {with_quotes} with live quotes")
+        else:
+            lines.append("SPY options chain: EMPTY or FAILED")
+
+        # 7. Cycles
+        lines.append(f"\nOptions cycles run: {self._options_trader._stats.get('cycles', 0)}")
+        lines.append(f"Options trades: {self._options_trader._stats.get('total_trades', 0)}")
+
+        self._send("\n".join(lines))
 
     def _cmd_news(self, args):
         """Show current news sentiment and headlines."""
