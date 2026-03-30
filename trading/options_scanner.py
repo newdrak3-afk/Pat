@@ -103,7 +103,10 @@ class OptionsScanner:
         candles_d1_raw = self.broker.get_candles(symbol, "1Day", 60)
         candles_h4_raw = self.broker.get_candles(symbol, "4Hour", 60)
         candles_h1_raw = self.broker.get_candles(symbol, "1Hour", 100)
-        candles_m15_raw = self.broker.get_candles(symbol, "15Min", 50)
+        try:
+            candles_m15_raw = self.broker.get_candles(symbol, "15Min", 50)
+        except Exception:
+            candles_m15_raw = []
 
         # Bar-close discipline
         candles_d1 = candles_d1_raw[:-1] if len(candles_d1_raw) > 1 else candles_d1_raw
