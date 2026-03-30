@@ -2,6 +2,10 @@
 Forex Scanner — Scans forex pairs for trading signals.
 
 Uses OANDA candlestick data + technical analysis to find setups.
+
+Strategy: Higher-timeframe trend filter (D1+H4 gate) with H1 pullback entries.
+Confidence scoring via structured module (confidence.py).
+News sentiment as soft/hard filter (news_sentiment.py).
 """
 
 import logging
@@ -15,6 +19,16 @@ from trading.confidence import compute_confidence, ConfidenceInputs
 from trading.news_sentiment import NewsReader
 
 logger = logging.getLogger(__name__)
+
+# Tier 1 pairs: lowest spreads, deepest liquidity — prioritize these
+TIER1_PAIRS = [
+    "EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD",
+    "USD_CAD", "USD_CHF", "NZD_USD",
+]
+
+# Minimum confidence thresholds by mode
+CONFIDENCE_THRESHOLD_DEMO = 0.45
+CONFIDENCE_THRESHOLD_LIVE = 0.55
 
 
 def is_forex_market_open(now: datetime = None) -> bool:
@@ -44,16 +58,16 @@ def is_forex_market_open(now: datetime = None) -> bool:
 class ForexScanner:
     """
     Scans forex pairs for trading signals using:
-    - Moving average crossovers
-    - RSI (overbought/oversold)
-    - Spread analysis
-    - Volume spikes
-    - Support/resistance levels
+    - Higher-timeframe trend filter (D1+H4 gate)
+    - Structured confidence scoring (5 dimensions)
+    - News sentiment filter (soft + hard blocks)
+    - Bar-close discipline (drops forming candles)
     """
 
     def __init__(self, broker: OandaBroker):
         self.broker = broker
         self.news = NewsReader()
+        self.confidence_threshold = CONFIDENCE_THRESHOLD_DEMO  # caller can override
 
     def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
         """
@@ -128,9 +142,10 @@ class ForexScanner:
         closes_h1 = np.array([c["close"] for c in candles_h1])
         highs_h1 = np.array([c["high"] for c in candles_h1])
         lows_h1 = np.array([c["low"] for c in candles_h1])
-        volumes_h1 = np.array([c["volume"] for c in candles_h1])
 
         closes_h4 = np.array([c["close"] for c in candles_h4])
+        highs_h4 = np.array([c["high"] for c in candles_h4])
+        lows_h4 = np.array([c["low"] for c in candles_h4])
 
         # Get current quote for spread check
         quote = self.broker.get_quote(symbol)
@@ -142,9 +157,6 @@ class ForexScanner:
         current_price = quote.mid
 
         # ─── HIGHER-TIMEFRAME TREND FILTER (GATE) ───
-        # This is the key filter: D1 and H4 must agree on direction.
-        # H1 only looks for pullback entries WITH the trend.
-        # Countertrend trades are blocked entirely.
 
         # H4 trend: price vs SMA20 + SMA20 slope
         h4_sma_20 = np.mean(closes_h4[-20:])
@@ -155,16 +167,16 @@ class ForexScanner:
 
         # D1 trend: price vs SMA20
         d1_trend = "flat"
+        d1_sma_20 = 0.0
         if len(candles_d1) >= 20:
             closes_d1 = np.array([c["close"] for c in candles_d1])
-            d1_sma_20 = np.mean(closes_d1[-20:])
+            d1_sma_20 = float(np.mean(closes_d1[-20:]))
             d1_sma_10 = np.mean(closes_d1[-10:])
             d1_trend = "up" if closes_d1[-1] > d1_sma_20 and d1_sma_10 > d1_sma_20 else \
                        "down" if closes_d1[-1] < d1_sma_20 and d1_sma_10 < d1_sma_20 else \
                        "flat"
 
-        # Determine allowed trade direction from higher timeframes
-        # Both H4 and D1 must agree, or at least one agrees and the other is flat
+        # Determine allowed trade direction
         if h4_trend == "up" and d1_trend in ("up", "flat"):
             htf_bias = "buy"
         elif h4_trend == "down" and d1_trend in ("down", "flat"):
@@ -174,12 +186,10 @@ class ForexScanner:
         elif d1_trend == "down" and h4_trend == "flat":
             htf_bias = "sell"
         else:
-            # No clear trend or conflicting — skip this pair entirely
             return None
 
         # ─── H1 INDICATORS ───
 
-        # Moving averages
         sma_20 = np.mean(closes_h1[-20:])
         sma_50 = np.mean(closes_h1[-50:])
         ema_12 = self._ema(closes_h1, 12)
@@ -188,8 +198,7 @@ class ForexScanner:
         # RSI (14-period)
         rsi = self._rsi(closes_h1, 14)
 
-        # MACD histogram (current and previous for momentum delta)
-        macd_line = ema_12 - ema_26
+        # MACD histogram
         macd_values = np.array([
             self._ema(closes_h1[:i+1], 12) - self._ema(closes_h1[:i+1], 26)
             for i in range(max(25, len(closes_h1)-10), len(closes_h1))
@@ -198,15 +207,13 @@ class ForexScanner:
         macd_hist = macd_values[-1] - signal_line if len(macd_values) > 0 else 0.0
         macd_hist_prev = (macd_values[-2] - self._ema(macd_values[:-1], 9)) if len(macd_values) > 1 else 0.0
 
-        # ATR (Average True Range) for stop loss
+        # ATR
         atr = self._atr(highs_h1, lows_h1, closes_h1, 14)
 
         # H4 ADX (trend strength)
-        highs_h4 = np.array([c["high"] for c in candles_h4])
-        lows_h4 = np.array([c["low"] for c in candles_h4])
         adx_h4 = self._adx(highs_h4, lows_h4, closes_h4, 14)
 
-        # Regime detection (simple: ATR-based)
+        # Regime detection
         atr_20 = self._atr(highs_h1, lows_h1, closes_h1, 20)
         atr_5 = self._atr(highs_h1[-6:], lows_h1[-6:], closes_h1[-6:], 5) if len(closes_h1) >= 6 else atr
         regime = "trending" if adx_h4 >= 20 else "ranging"
@@ -224,9 +231,13 @@ class ForexScanner:
         atr_pips = atr / pip
         spread_pips = quote.spread / pip
 
-        # ─── CONFIDENCE MODULE (ChatGPT structured scoring) ───
+        # H4 swing levels for location scoring
+        h4_recent_low = float(np.min(lows_h4[-10:]))
+        h4_recent_high = float(np.max(highs_h4[-10:]))
 
-        side = htf_bias  # Locked to higher-timeframe direction
+        # ─── CONFIDENCE MODULE ───
+
+        side = htf_bias
 
         inputs = ConfidenceInputs(
             direction=side,
@@ -235,55 +246,88 @@ class ForexScanner:
             rsi_h1=rsi,
             macd_hist_h1=macd_hist,
             macd_hist_prev_h1=macd_hist_prev,
-            sma20_h1=sma_20,
-            sma50_h1=sma_50,
+            sma20_h1=float(sma_20),
+            sma50_h1=float(sma_50),
             close_h1=float(closes_h1[-1]),
             adx_h4=adx_h4,
             atr_pips_h1=atr_pips,
             spread_pips=spread_pips,
             regime=regime,
+            h4_sma20=float(h4_sma_20),
+            d1_sma20=float(d1_sma_20),
+            h4_recent_low=h4_recent_low,
+            h4_recent_high=h4_recent_high,
         )
 
         result = compute_confidence(inputs)
 
-        # Minimum 0.35 to take a trade
-        if result.confidence < 0.35:
+        if result.confidence < self.confidence_threshold:
             return None
 
         confidence = result.confidence
         reasons = list(result.reasons)
 
-        # News sentiment (soft filter — adjusts confidence, doesn't block)
+        # ─── NEWS SENTIMENT ───
+
         try:
+            # HIGH-IMPACT EVENTS = HARD BLOCK (not just penalty)
+            has_impact, impacts = self.news.has_high_impact_event()
+            if has_impact:
+                # Check if this symbol is affected (USD pairs for Fed, EUR for ECB, etc.)
+                impact_text = " ".join(impacts).lower()
+                symbol_currencies = set()
+                parts = symbol.replace("_", "/").split("/")
+                for p in parts:
+                    symbol_currencies.add(p.upper())
+
+                # Map events to affected currencies
+                affected = False
+                if any(kw in impact_text for kw in ["fed", "fomc", "nfp", "powell"]):
+                    if "USD" in symbol_currencies:
+                        affected = True
+                if any(kw in impact_text for kw in ["ecb", "lagarde"]):
+                    if "EUR" in symbol_currencies:
+                        affected = True
+                if any(kw in impact_text for kw in ["boe", "bailey"]):
+                    if "GBP" in symbol_currencies:
+                        affected = True
+                if any(kw in impact_text for kw in ["boj", "ueda"]):
+                    if "JPY" in symbol_currencies:
+                        affected = True
+                if "cpi" in impact_text or "inflation" in impact_text:
+                    if "USD" in symbol_currencies:
+                        affected = True
+
+                if affected:
+                    logger.info(f"HARD BLOCK {symbol}: high-impact event — {impacts[0][:60]}")
+                    reasons.append(f"BLOCKED: high-impact event")
+                    return None
+
+            # Soft news filter for non-event news
             news = self.news.get_sentiment(symbol)
             if news.headline_count > 0:
                 if side == "buy" and news.sentiment == "bearish" and news.score < -0.3:
-                    confidence *= 0.85  # Penalize buying into bearish news
+                    confidence *= 0.85
                     reasons.append(f"news: bearish ({news.score:+.2f})")
                 elif side == "sell" and news.sentiment == "bullish" and news.score > 0.3:
-                    confidence *= 0.85  # Penalize selling into bullish news
+                    confidence *= 0.85
                     reasons.append(f"news: bullish ({news.score:+.2f})")
                 elif (side == "buy" and news.sentiment == "bullish") or \
                      (side == "sell" and news.sentiment == "bearish"):
-                    confidence *= 1.05  # Small boost for aligned news
+                    confidence *= 1.05
                     confidence = min(confidence, 1.0)
                     reasons.append(f"news: aligned ({news.score:+.2f})")
-
-            # Check for high-impact events (avoid trading around them)
-            has_impact, impacts = self.news.has_high_impact_event()
-            if has_impact:
-                confidence *= 0.7  # Heavy penalty during major news
-                reasons.append(f"news: HIGH IMPACT EVENT")
         except Exception:
-            pass  # News is optional — don't block trades if it fails
+            pass
 
-        # Recheck confidence after news adjustment
-        if confidence < 0.35:
+        # Recheck after news adjustment
+        if confidence < self.confidence_threshold:
             return None
 
-        # Stop loss = 1.5x ATR, Take profit = 2x ATR (1:1.33 risk/reward)
+        # ─── SL/TP (improved R:R) ───
+        # 1.5 ATR stop / 2.5 ATR target = 1:1.67 R:R
         sl_distance = atr * 1.5
-        tp_distance = atr * 2.0
+        tp_distance = atr * 2.5
 
         if side == "buy":
             entry = quote.ask
@@ -297,11 +341,15 @@ class ForexScanner:
         sl_pips = sl_distance / pip
         tp_pips = tp_distance / pip
 
+        # Tier tag for logging
+        tier = "T1" if symbol in TIER1_PAIRS else "T2"
+
         reasoning = (
-            f"{'  |  '.join(reasons)}\n"
+            f"[{tier}] {'  |  '.join(reasons)}\n"
             f"RSI: {rsi:.0f} | ADX: {adx_h4:.0f} | Regime: {regime}\n"
             f"D1: {d1_trend} | H4: {h4_trend} | HTF bias: {htf_bias}\n"
-            f"ATR: {atr_pips:.1f} pips | Spread: {spread_pips:.1f} pips | SL: {sl_pips:.0f} pips | TP: {tp_pips:.0f} pips"
+            f"ATR: {atr_pips:.1f} pips | Spread: {spread_pips:.1f} pips\n"
+            f"SL: {sl_pips:.0f} pips | TP: {tp_pips:.0f} pips | R:R 1:{tp_distance/sl_distance:.1f}"
         )
 
         return {
@@ -313,13 +361,18 @@ class ForexScanner:
             "take_profit": take_profit,
             "sl_pips": sl_pips,
             "tp_pips": tp_pips,
-            "units": 1000,  # micro lot, risk manager will adjust
+            "units": 1000,
             "reasoning": reasoning,
             "rsi": rsi,
             "atr": atr,
             "h4_trend": h4_trend,
             "d1_trend": d1_trend,
             "htf_bias": htf_bias,
+            "spread_pips": spread_pips,
+            "atr_pips": atr_pips,
+            "adx_h4": adx_h4,
+            "regime": regime,
+            "tier": tier,
         }
 
     def _ema(self, data: np.ndarray, period: int) -> float:
@@ -360,7 +413,7 @@ class ForexScanner:
     ) -> float:
         """Calculate Average Directional Index (trend strength)."""
         if len(highs) < period + 2:
-            return 15.0  # Default to low trend strength
+            return 15.0
 
         plus_dm = []
         minus_dm = []
@@ -378,7 +431,6 @@ class ForexScanner:
             )
             tr_list.append(tr)
 
-        # Smoothed averages
         atr_s = float(np.mean(tr_list[:period]))
         plus_di_s = float(np.mean(plus_dm[:period]))
         minus_di_s = float(np.mean(minus_dm[:period]))
@@ -399,7 +451,6 @@ class ForexScanner:
         if not dx_list:
             return 15.0
 
-        # ADX = smoothed average of DX
         adx = float(np.mean(dx_list[-period:])) if len(dx_list) >= period else float(np.mean(dx_list))
         return adx
 

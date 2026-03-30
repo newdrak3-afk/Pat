@@ -205,9 +205,37 @@ class GuardEngine:
             signal["take_profit"] = adj_tp
             approval.guard_results["slippage"] = True
 
-        # ── 9. Position sizing ──
+        # ── 9. Same-theme exposure cap ──
+        # Max 2 positions with the same base/quote currency
+        if self.portfolio:
+            symbol_currencies = set()
+            parts = symbol.replace("_", "/").split("/")
+            for p in parts:
+                symbol_currencies.add(p.upper())
+
+            try:
+                report = self.portfolio.get_exposure_report()
+                positions = report.get("positions", {})
+                theme_count = 0
+                for pos_symbol in positions:
+                    pos_parts = pos_symbol.replace("_", "/").split("/")
+                    pos_currencies = set(p.upper() for p in pos_parts)
+                    if symbol_currencies & pos_currencies:  # overlap
+                        theme_count += 1
+                if theme_count >= 2:
+                    approval.approved = False
+                    overlap = symbol_currencies & set()
+                    approval.reasons.append(f"Theme cap: {theme_count} positions share currency")
+                    approval.guard_results["theme_cap"] = False
+                    self._log_verdict(signal, approved=False, reason="Same-theme exposure cap")
+                    return approval
+            except Exception:
+                pass
+            approval.guard_results["theme_cap"] = True
+
+        # ── 10. Position sizing ──
         from trading.brokers.oanda import CRYPTO_PAIRS
-        risk_pct = 0.01  # 1% risk per trade (conservative for initial run)
+        risk_pct = 0.005  # 0.5% risk per trade (ChatGPT recommendation)
         risk_amount = balance * risk_pct
         sl_distance = abs(signal.get("entry", 0) - signal.get("stop_loss", 0))
         is_crypto = symbol in CRYPTO_PAIRS
@@ -217,7 +245,7 @@ class GuardEngine:
             if is_crypto:
                 units = max(1, min(units, 5))
             else:
-                units = max(1, min(units, 5000))  # Cap at 5k units for practice
+                units = max(1, min(units, 5000))
         else:
             units = 1 if is_crypto else 1000
 
