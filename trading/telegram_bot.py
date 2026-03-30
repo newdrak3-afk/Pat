@@ -204,6 +204,7 @@ class TelegramBot:
             "/why": self._cmd_why,
             "/options": self._cmd_options,
             "/heartbeat": self._cmd_heartbeat,
+            "/news": self._cmd_news,
         }
 
         handler = handlers.get(cmd)
@@ -244,7 +245,9 @@ class TelegramBot:
             "/resume — Resume all\n"
             "/set key value — Change a setting\n"
             "/mode [dev|paper|practice|live] — Switch profile\n"
-            "/options — Options trader status\n\n"
+            "/options — Options trader status\n"
+            "/news — Market news & sentiment\n"
+            "/news EUR_USD — News for a pair\n\n"
             "<b>Emergency:</b>\n"
             "/kill — STOP everything immediately\n"
             "/safe — Safe mode (close all, stop trading)\n\n"
@@ -668,6 +671,31 @@ class TelegramBot:
                 "Symbols: SPY, QQQ, AAPL, MSFT, NVDA\n"
                 "Hours: Mon-Fri 9:45 AM - 3:45 PM ET"
             )
+
+    def _cmd_news(self, args):
+        """Show current news sentiment and headlines."""
+        try:
+            from trading.news_sentiment import NewsReader
+            reader = NewsReader()
+
+            # If a symbol is specified, get sentiment for that symbol
+            if args:
+                symbol = args[0].upper().replace("/", "_")
+                sentiment = reader.get_sentiment(symbol)
+                lines = [f"<b>NEWS: {symbol}</b>\n"]
+                lines.append(f"Sentiment: <b>{sentiment.sentiment.upper()}</b> ({sentiment.score:+.2f})")
+                lines.append(f"Headlines: {sentiment.headline_count}")
+                if sentiment.top_headlines:
+                    lines.append("")
+                    for h in sentiment.top_headlines[:5]:
+                        lines.append(f"- {h[:100]}")
+                self._send("\n".join(lines))
+            else:
+                # General market sentiment
+                report = reader.format_sentiment_report()
+                self._send(f"<pre>{report[:3900]}</pre>")
+        except Exception as e:
+            self._send(f"News error: {str(e)[:200]}")
 
     def _cmd_why(self, args):
         """Show why the last signal(s) were blocked."""
