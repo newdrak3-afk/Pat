@@ -162,8 +162,9 @@ class AutoTrader:
 
             for pos in broker_positions:
                 side = "buy" if pos.quantity > 0 else "sell"
+                trade_id = f"synced_{pos.symbol}_{side}"
                 trade_info = {
-                    "trade_id": f"synced_{pos.symbol}_{side}",
+                    "trade_id": trade_id,
                     "symbol": pos.symbol,
                     "side": side,
                     "units": abs(pos.quantity),
@@ -175,7 +176,20 @@ class AutoTrader:
                     "placed_at": datetime.utcnow().isoformat(),
                     "status": "open",
                 }
-                self.position_mgr.open_trades[trade_info["trade_id"]] = trade_info
+                self.position_mgr.open_trades[trade_id] = trade_info
+
+                # Save to DB so FK references work for lessons
+                self.db.save_trade(
+                    trade_id=trade_id,
+                    symbol=pos.symbol,
+                    side=side,
+                    units=abs(pos.quantity),
+                    entry_price=pos.entry_price,
+                    stop_loss=0,
+                    take_profit=0,
+                    confidence=0,
+                    reasoning="Synced from broker on restart",
+                )
 
                 # Register in portfolio manager
                 if self.portfolio:

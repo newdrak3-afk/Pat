@@ -104,8 +104,7 @@ class TradeDB:
         category    TEXT NOT NULL DEFAULT '',
         description TEXT DEFAULT '',
         rule_added  TEXT DEFAULT '',
-        created_at  TEXT NOT NULL,
-        FOREIGN KEY (trade_id) REFERENCES trades(trade_id)
+        created_at  TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS daily_stats (
@@ -181,11 +180,54 @@ class TradeDB:
         """
         conn = self._connect()
         try:
-            # Example future migrations:
-            # self._add_column_if_missing(conn, "trades", "strategy", "TEXT", "''")
+            # Migration: remove FK constraint from lessons table
+            # SQLite can't alter constraints, so recreate the table
+            self._migrate_lessons_drop_fk(conn)
+
             conn.commit()
         finally:
             conn.close()
+
+    def _migrate_lessons_drop_fk(self, conn: sqlite3.Connection) -> None:
+        """Recreate lessons table without FOREIGN KEY constraint.
+
+        The FK caused FOREIGN KEY constraint failures when saving lessons
+        for trades that were synced from the broker (not in trades table).
+        """
+        try:
+            # Check if the table has a FK by looking at its SQL
+            row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='lessons'"
+            ).fetchone()
+            if row is None:
+                return
+            create_sql = row[0] or ""
+            if "FOREIGN KEY" not in create_sql:
+                return  # Already migrated or never had FK
+
+            # Recreate without FK
+            conn.execute("ALTER TABLE lessons RENAME TO lessons_old")
+            conn.execute("""
+                CREATE TABLE lessons (
+                    lesson_id   TEXT PRIMARY KEY,
+                    trade_id    TEXT NOT NULL,
+                    category    TEXT NOT NULL DEFAULT '',
+                    description TEXT DEFAULT '',
+                    rule_added  TEXT DEFAULT '',
+                    created_at  TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                INSERT INTO lessons
+                SELECT lesson_id, trade_id, category, description, rule_added, created_at
+                FROM lessons_old
+            """)
+            conn.execute("DROP TABLE lessons_old")
+            conn.commit()
+        except Exception as e:
+            # If migration fails, log but don't crash
+            import logging
+            logging.getLogger(__name__).warning(f"Lessons FK migration skipped: {e}")
 
     # ------------------------------------------------------------------
     # Helpers
