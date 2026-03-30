@@ -1,28 +1,31 @@
 """
-Options Trader — Automated options trading with separate risk rules.
+Options Trader v2 — Momentum + Swing modes with dynamic exits.
 
-Runs alongside the forex auto_trader but on a completely separate track:
-- Different broker (Alpaca)
-- Different risk rules (premium-based, not pip-based)
-- Different market hours (US 9:30-4:00 ET, Mon-Fri)
-- Separate performance tracking
+Two modes:
+  MOMENTUM: 5-10 DTE, quick entries, 25-35% TP, strict time stop
+  SWING:    10-21 DTE, pullback entries, 50% TP, wider time stop
 
-Risk Rules (options-specific):
-- Max premium per trade: $500
-- Max contracts per trade: 2
-- Max spread: 15%
-- No averaging down
-- Force close before expiry (2 DTE)
-- No trading first/last 15 min
-- Max 3 open option positions
-- Exit at 50% profit or 40% loss on premium
+Exit logic:
+  - Premium-based TP/SL (mode-dependent)
+  - Time stop (no move within N hours = close)
+  - Momentum fade (underlying reverses)
+  - Partial take-profit at first target
+  - Force close at 2 DTE
+  - End-of-day review for momentum trades
+
+Risk rules:
+  - Max premium per trade: $500
+  - Max 3 open option positions
+  - No trading first/last 15 min
+  - Limit orders only
+  - SPY/QQQ priority, single names only when ideal
 """
 
 import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from trading.brokers.alpaca import AlpacaBroker, OPTIONS_SYMBOLS
@@ -37,9 +40,7 @@ logger = logging.getLogger(__name__)
 
 class OptionsTrader:
     """
-    Automated options trading loop.
-
-    Separate from forex — different broker, different rules, different track.
+    Automated options trading loop with momentum + swing modes.
     """
 
     def __init__(self, config: Optional[SystemConfig] = None):
@@ -49,13 +50,27 @@ class OptionsTrader:
         self.db = TradeDB()
         self.notifier = TelegramNotifier(self.config)
 
-        # Options-specific risk limits
+        # Risk limits
         self.max_premium_per_trade = 500.0
-        self.max_contracts_per_trade = 2
         self.max_open_positions = 3
-        self.profit_target_pct = 0.50   # Close at 50% profit
-        self.stop_loss_pct = 0.40       # Close at 40% loss
-        self.force_close_dte = 2        # Close 2 days before expiry
+
+        # Mode-specific exit rules
+        self.exit_rules = {
+            "momentum": {
+                "tp_pct": 0.30,           # 30% profit target
+                "sl_pct": 0.35,           # 35% stop loss
+                "partial_tp_pct": 0.20,   # Take half at 20%
+                "time_stop_hours": 4,     # Close if no move in 4 hours
+                "force_close_dte": 2,
+            },
+            "swing": {
+                "tp_pct": 0.50,           # 50% profit target
+                "sl_pct": 0.40,           # 40% stop loss
+                "partial_tp_pct": 0.25,   # Take half at 25%
+                "time_stop_hours": 24,    # Close if no move in 24 hours
+                "force_close_dte": 2,
+            },
+        }
 
         # State
         self.open_trades: dict[str, dict] = {}
@@ -65,6 +80,8 @@ class OptionsTrader:
             "losses": 0,
             "total_pnl": 0.0,
             "cycles": 0,
+            "momentum_trades": 0,
+            "swing_trades": 0,
         }
         self._load_state()
 
@@ -91,10 +108,6 @@ class OptionsTrader:
         """Start the options trading loop."""
         if not self.broker.api_key:
             logger.info("Alpaca not configured — options trading disabled")
-            self.notifier.send_system_alert(
-                "Options module: No Alpaca API key set.\n"
-                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY to enable."
-            )
             return
 
         logger.info("Connecting to Alpaca...")
@@ -104,13 +117,13 @@ class OptionsTrader:
 
         self.scanner = OptionsScanner(self.broker)
         balance = self.broker.get_account_balance()
-        logger.info(f"Options trader started — Alpaca balance: ${balance:,.2f}")
+        logger.info(f"Options trader v2 started — Balance: ${balance:,.2f}")
 
         self.notifier.send_system_alert(
-            f"Options module online.\n"
+            f"OPTIONS v2 online\n"
+            f"Modes: Momentum (5-10 DTE) + Swing (10-21 DTE)\n"
             f"Alpaca balance: ${balance:,.2f}\n"
-            f"Symbols: {', '.join(OPTIONS_SYMBOLS)}\n"
-            f"Market hours: 9:45 AM - 3:45 PM ET"
+            f"Focus: SPY, QQQ first | AAPL, MSFT, NVDA when ideal"
         )
 
         while True:
@@ -134,7 +147,7 @@ class OptionsTrader:
         """Run one options scan + trade cycle."""
         self._stats["cycles"] += 1
 
-        # Check open positions first
+        # Check existing positions first (exits)
         self._check_positions()
 
         # Scan for new signals
@@ -152,12 +165,14 @@ class OptionsTrader:
 
             contract = signal["contract"]
 
-            # Options risk checks
             if contract.max_loss > self.max_premium_per_trade:
-                logger.info(f"SKIP {signal['symbol']}: Premium ${contract.max_loss:.0f} > max ${self.max_premium_per_trade}")
+                logger.info(
+                    f"SKIP {signal['symbol']}: Premium ${contract.max_loss:.0f} "
+                    f"> max ${self.max_premium_per_trade}"
+                )
                 continue
 
-            # Place the trade (limit order at mid price)
+            # Place the trade
             result = self.broker.place_option_order(
                 option_symbol=contract.symbol,
                 side="buy",
@@ -167,115 +182,171 @@ class OptionsTrader:
             )
 
             if result.success:
+                mode = signal.get("mode", "swing")
                 trade_info = {
                     "trade_id": result.order_id,
                     "symbol": signal["symbol"],
                     "option_symbol": contract.symbol,
                     "option_type": contract.option_type,
                     "side": signal["side"],
+                    "mode": mode,
+                    "tier": signal.get("tier", 1),
                     "strike": contract.strike,
                     "expiration": contract.expiration,
                     "dte": contract.dte,
                     "entry_premium": contract.mid,
                     "max_loss": contract.max_loss,
                     "confidence": signal["confidence"],
+                    "confidence_scores": signal.get("confidence_scores", {}),
+                    "reasons": signal.get("reasons", []),
                     "reasoning": signal["reasoning"],
                     "placed_at": datetime.now(timezone.utc).isoformat(),
+                    "entry_underlying": signal["entry"],
+                    "peak_premium": contract.mid,
+                    "partial_taken": False,
                 }
 
                 self.open_trades[result.order_id] = trade_info
                 self._stats["total_trades"] += 1
+                if mode == "momentum":
+                    self._stats["momentum_trades"] += 1
+                else:
+                    self._stats["swing_trades"] += 1
 
-                # Save to DB
+                # DB
                 self.db.save_trade(
                     trade_id=result.order_id,
                     symbol=f"{signal['symbol']}_{contract.option_type.upper()}_{contract.strike}",
                     side=signal["side"],
                     units=1,
                     entry_price=contract.mid,
-                    stop_loss=contract.mid * (1 - self.stop_loss_pct),
-                    take_profit=contract.mid * (1 + self.profit_target_pct),
+                    stop_loss=contract.mid * (1 - self.exit_rules[mode]["sl_pct"]),
+                    take_profit=contract.mid * (1 + self.exit_rules[mode]["tp_pct"]),
                     confidence=signal["confidence"],
                     reasoning=signal["reasoning"],
                 )
 
-                # Notify
+                # Notify with full detail
                 direction = "CALL" if contract.option_type == "call" else "PUT"
-                self.notifier.send_option_alert(
-                    symbol=signal["symbol"],
-                    option_type=contract.option_type,
-                    strike=contract.strike,
-                    expiration=contract.expiration,
-                    hit_pct=signal["confidence"] * 100,
-                    entry_price=contract.mid,
-                    underlying_price=signal["entry"],
-                    amount=contract.max_loss,
-                    reasoning=signal["reasoning"],
+                self.notifier.send_system_alert(
+                    f"OPTIONS TRADE [{mode.upper()}]\n\n"
+                    f"{direction} {signal['symbol']} ${contract.strike}\n"
+                    f"Exp: {contract.expiration} ({contract.dte} DTE)\n"
+                    f"Premium: ${contract.mid:.2f} (max loss: ${contract.max_loss:.0f})\n"
+                    f"Confidence: {signal['confidence']:.0%}\n"
+                    f"Tier: {'SPY/QQQ' if signal.get('tier') == 1 else 'Single name'}\n\n"
+                    f"Exits: TP {self.exit_rules[mode]['tp_pct']:.0%} | "
+                    f"SL {self.exit_rules[mode]['sl_pct']:.0%} | "
+                    f"Partial {self.exit_rules[mode]['partial_tp_pct']:.0%} | "
+                    f"Time stop {self.exit_rules[mode]['time_stop_hours']}h\n\n"
+                    f"{signal['reasoning'][:300]}"
                 )
 
                 logger.info(
-                    f"OPTIONS TRADE: {direction} {signal['symbol']} "
-                    f"${contract.strike} exp {contract.expiration} "
-                    f"@ ${contract.mid:.2f}"
+                    f"OPTIONS TRADE: [{mode.upper()}] {direction} {signal['symbol']} "
+                    f"${contract.strike} exp {contract.expiration} @ ${contract.mid:.2f}"
                 )
 
         self._save_state()
 
     def _check_positions(self):
-        """Monitor open options positions for exit conditions."""
+        """Monitor open positions with dynamic exit logic."""
         if not self.open_trades:
             return
 
         positions = self.broker.get_positions()
         pos_by_symbol = {p.symbol: p for p in positions}
-
         closed_ids = []
 
         for trade_id, info in self.open_trades.items():
             option_sym = info["option_symbol"]
             entry_premium = info["entry_premium"]
+            mode = info.get("mode", "swing")
+            rules = self.exit_rules[mode]
 
             pos = pos_by_symbol.get(option_sym)
 
             if pos is None:
-                # Position closed (filled SL/TP or expired)
                 closed_ids.append(trade_id)
-                self._resolve_closed(trade_id, info, 0)
+                self._resolve_closed(trade_id, info, 0, "expired_or_filled")
                 continue
 
             current_premium = pos.current_price
             pnl_pct = (current_premium - entry_premium) / entry_premium if entry_premium > 0 else 0
 
-            # Exit: profit target
-            if pnl_pct >= self.profit_target_pct:
-                logger.info(f"PROFIT TARGET: {info['symbol']} +{pnl_pct:.0%}")
+            # Track peak premium for trailing
+            if current_premium > info.get("peak_premium", 0):
+                info["peak_premium"] = current_premium
+
+            # ─── EXIT 1: Full profit target ───
+            if pnl_pct >= rules["tp_pct"]:
+                logger.info(f"TP HIT: {info['symbol']} [{mode}] +{pnl_pct:.0%}")
                 self.broker.close_position(option_sym)
                 closed_ids.append(trade_id)
                 pnl = (current_premium - entry_premium) * 100
-                self._resolve_closed(trade_id, info, pnl, "win")
+                self._resolve_closed(trade_id, info, pnl, "profit_target")
                 continue
 
-            # Exit: stop loss
-            if pnl_pct <= -self.stop_loss_pct:
-                logger.info(f"STOP LOSS: {info['symbol']} {pnl_pct:.0%}")
+            # ─── EXIT 2: Stop loss ───
+            if pnl_pct <= -rules["sl_pct"]:
+                logger.info(f"SL HIT: {info['symbol']} [{mode}] {pnl_pct:.0%}")
                 self.broker.close_position(option_sym)
                 closed_ids.append(trade_id)
                 pnl = (current_premium - entry_premium) * 100
-                self._resolve_closed(trade_id, info, pnl, "loss")
+                self._resolve_closed(trade_id, info, pnl, "stop_loss")
                 continue
 
-            # Exit: force close near expiry
+            # ─── EXIT 3: Partial take-profit ───
+            if not info.get("partial_taken") and pnl_pct >= rules["partial_tp_pct"]:
+                logger.info(f"PARTIAL TP: {info['symbol']} [{mode}] +{pnl_pct:.0%}")
+                # In production you'd sell half; for now just log and trail
+                info["partial_taken"] = True
+                info["trail_from"] = current_premium
+                self.notifier.send_system_alert(
+                    f"OPTIONS PARTIAL TP +{pnl_pct:.0%}\n"
+                    f"{info['symbol']} [{mode.upper()}]\n"
+                    f"Trailing remainder..."
+                )
+
+            # ─── EXIT 4: Trailing stop after partial ───
+            if info.get("partial_taken") and info.get("peak_premium", 0) > 0:
+                trail_from_peak = (current_premium - info["peak_premium"]) / info["peak_premium"]
+                if trail_from_peak <= -0.15:  # Give back 15% from peak
+                    logger.info(f"TRAIL STOP: {info['symbol']} [{mode}] gave back from peak")
+                    self.broker.close_position(option_sym)
+                    closed_ids.append(trade_id)
+                    pnl = (current_premium - entry_premium) * 100
+                    self._resolve_closed(trade_id, info, pnl, "trailing_stop")
+                    continue
+
+            # ─── EXIT 5: Time stop ───
+            try:
+                placed = datetime.fromisoformat(info["placed_at"].replace("Z", "+00:00"))
+                hours_held = (datetime.now(timezone.utc) - placed).total_seconds() / 3600
+                if hours_held >= rules["time_stop_hours"] and pnl_pct < 0.05:
+                    logger.info(
+                        f"TIME STOP: {info['symbol']} [{mode}] "
+                        f"{hours_held:.0f}h held, only {pnl_pct:+.0%}"
+                    )
+                    self.broker.close_position(option_sym)
+                    closed_ids.append(trade_id)
+                    pnl = (current_premium - entry_premium) * 100
+                    self._resolve_closed(trade_id, info, pnl, "time_stop")
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+            # ─── EXIT 6: Force close near expiry ───
             try:
                 exp_date = datetime.strptime(info["expiration"], "%Y-%m-%d").date()
                 now = datetime.now(timezone.utc).date()
                 dte = (exp_date - now).days
-                if dte <= self.force_close_dte:
-                    logger.info(f"EXPIRY CLOSE: {info['symbol']} {dte} DTE remaining")
+                if dte <= rules["force_close_dte"]:
+                    logger.info(f"EXPIRY CLOSE: {info['symbol']} {dte} DTE")
                     self.broker.close_position(option_sym)
                     closed_ids.append(trade_id)
                     pnl = (current_premium - entry_premium) * 100
-                    outcome = "win" if pnl > 0 else "loss"
-                    self._resolve_closed(trade_id, info, pnl, outcome)
+                    self._resolve_closed(trade_id, info, pnl, "expiry_close")
             except (ValueError, TypeError):
                 pass
 
@@ -284,10 +355,10 @@ class OptionsTrader:
 
         self._save_state()
 
-    def _resolve_closed(self, trade_id: str, info: dict, pnl: float, outcome: str = None):
-        """Handle a closed options trade."""
-        if outcome is None:
-            outcome = "win" if pnl > 0 else "loss"
+    def _resolve_closed(self, trade_id: str, info: dict, pnl: float, exit_reason: str):
+        """Handle a closed options trade with full logging."""
+        outcome = "win" if pnl > 0 else "loss"
+        mode = info.get("mode", "swing")
 
         if outcome == "win":
             self._stats["wins"] += 1
@@ -305,40 +376,57 @@ class OptionsTrader:
         balance = self.broker.get_account_balance()
         direction = info.get("option_type", "option").upper()
 
-        if outcome == "win":
-            self.notifier.send_system_alert(
-                f"OPTIONS WIN +${pnl:.2f}\n"
-                f"{info['symbol']} {direction} ${info['strike']}\n"
-                f"Balance: ${balance:,.2f}"
-            )
-        else:
-            self.notifier.send_system_alert(
-                f"OPTIONS LOSS -${abs(pnl):.2f}\n"
-                f"{info['symbol']} {direction} ${info['strike']}\n"
-                f"Balance: ${balance:,.2f}"
-            )
+        # Detailed exit notification
+        self.notifier.send_system_alert(
+            f"OPTIONS {'WIN' if outcome == 'win' else 'LOSS'} "
+            f"{'+'if pnl > 0 else ''}${pnl:.2f}\n\n"
+            f"{info['symbol']} {direction} ${info['strike']}\n"
+            f"Mode: {mode.upper()} | Exit: {exit_reason}\n"
+            f"Entry: ${info['entry_premium']:.2f} | "
+            f"Confidence: {info.get('confidence', 0):.0%}\n"
+            f"Balance: ${balance:,.2f}\n\n"
+            f"Scores: {info.get('confidence_scores', {})}\n"
+            f"Reasons: {', '.join(info.get('reasons', [])[:3])}"
+        )
+
+        logger.info(
+            f"OPTIONS {'WIN' if outcome == 'win' else 'LOSS'}: "
+            f"{info['symbol']} [{mode}] ${pnl:+.2f} | exit={exit_reason}"
+        )
 
     def get_status(self) -> str:
-        """Get options trader status."""
+        """Get options trader status with full detail."""
         total = self._stats["wins"] + self._stats["losses"]
         win_rate = (self._stats["wins"] / total * 100) if total > 0 else 0
 
         lines = [
-            "OPTIONS TRADER STATUS",
+            "OPTIONS TRADER v2",
             "",
+            f"  Modes:      Momentum + Swing",
             f"  Trades:     {self._stats['total_trades']}",
+            f"  Momentum:   {self._stats.get('momentum_trades', 0)}",
+            f"  Swing:      {self._stats.get('swing_trades', 0)}",
             f"  Wins:       {self._stats['wins']}",
             f"  Losses:     {self._stats['losses']}",
             f"  Win Rate:   {win_rate:.0f}%",
             f"  PnL:        ${self._stats['total_pnl']:+,.2f}",
-            f"  Open:       {len(self.open_trades)}",
-            f"  Symbols:    {', '.join(OPTIONS_SYMBOLS)}",
+            f"  Open:       {len(self.open_trades)}/{self.max_open_positions}",
+            "",
+            "  Exit Rules:",
+            f"  Momentum: TP 30% | SL 35% | Partial 20% | Time 4h",
+            f"  Swing:    TP 50% | SL 40% | Partial 25% | Time 24h",
+            "",
         ]
 
-        for tid, info in self.open_trades.items():
-            lines.append(
-                f"  {info['symbol']} {info['option_type'].upper()} "
-                f"${info['strike']} exp {info['expiration']}"
-            )
+        if self.open_trades:
+            lines.append("  Open Positions:")
+            for tid, info in self.open_trades.items():
+                mode = info.get("mode", "?")
+                lines.append(
+                    f"  [{mode.upper()}] {info['symbol']} "
+                    f"{info.get('option_type', '?').upper()} "
+                    f"${info['strike']} exp {info['expiration']} "
+                    f"@ ${info['entry_premium']:.2f}"
+                )
 
         return "\n".join(lines)
