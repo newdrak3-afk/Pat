@@ -12,6 +12,7 @@ from typing import Optional
 from trading.brokers.oanda import OandaBroker, FOREX_PAIRS, CRYPTO_PAIRS, ALL_PAIRS
 from trading.brokers.base import Quote
 from trading.confidence import compute_confidence, ConfidenceInputs
+from trading.news_sentiment import NewsReader
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class ForexScanner:
 
     def __init__(self, broker: OandaBroker):
         self.broker = broker
+        self.news = NewsReader()
 
     def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
         """
@@ -249,7 +251,35 @@ class ForexScanner:
             return None
 
         confidence = result.confidence
-        reasons = result.reasons
+        reasons = list(result.reasons)
+
+        # News sentiment (soft filter — adjusts confidence, doesn't block)
+        try:
+            news = self.news.get_sentiment(symbol)
+            if news.headline_count > 0:
+                if side == "buy" and news.sentiment == "bearish" and news.score < -0.3:
+                    confidence *= 0.85  # Penalize buying into bearish news
+                    reasons.append(f"news: bearish ({news.score:+.2f})")
+                elif side == "sell" and news.sentiment == "bullish" and news.score > 0.3:
+                    confidence *= 0.85  # Penalize selling into bullish news
+                    reasons.append(f"news: bullish ({news.score:+.2f})")
+                elif (side == "buy" and news.sentiment == "bullish") or \
+                     (side == "sell" and news.sentiment == "bearish"):
+                    confidence *= 1.05  # Small boost for aligned news
+                    confidence = min(confidence, 1.0)
+                    reasons.append(f"news: aligned ({news.score:+.2f})")
+
+            # Check for high-impact events (avoid trading around them)
+            has_impact, impacts = self.news.has_high_impact_event()
+            if has_impact:
+                confidence *= 0.7  # Heavy penalty during major news
+                reasons.append(f"news: HIGH IMPACT EVENT")
+        except Exception:
+            pass  # News is optional — don't block trades if it fails
+
+        # Recheck confidence after news adjustment
+        if confidence < 0.35:
+            return None
 
         # Stop loss = 1.5x ATR, Take profit = 2x ATR (1:1.33 risk/reward)
         sl_distance = atr * 1.5
