@@ -1,14 +1,16 @@
 """
-Options Contract Selector — Picks the right contract for a trade.
+Options Contract Selector v2 — Mode-aware contract picking.
 
-Given a stock trend signal, selects the optimal option contract based on:
-- Expiration: 7-14 DTE (days to expiration)
-- Strike: Near ATM (at-the-money) or slightly ITM
-- Liquidity: Minimum volume + open interest
-- Spread: Max bid/ask spread threshold
-- Type: Calls for uptrend, puts for downtrend
+Momentum mode: 5-10 DTE, tighter delta, prefer ATM
+Swing mode: 10-21 DTE, slightly wider delta, prefer slight ITM
 
-This is the critical module that prevents noisy options trades.
+Filters:
+- DTE range (mode-dependent)
+- Near ATM (delta 0.35-0.55)
+- Min 200 OI (500+ preferred for single names)
+- Max 10% bid/ask spread
+- Max $500 premium
+- Reject if spread > 5% of ATR (overpriced execution)
 """
 
 import logging
