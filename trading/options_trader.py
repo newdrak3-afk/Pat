@@ -133,25 +133,38 @@ class OptionsTrader:
                     cycle_count += 1
                     logger.info(f"OPTIONS CYCLE #{cycle_count} starting...")
                     self._run_cycle()
-                    logger.info(
-                        f"OPTIONS CYCLE #{cycle_count} done — "
-                        f"open={len(self.open_trades)}/{self.max_open_positions} "
-                        f"trades={self._stats['total_trades']} "
-                        f"wins={self._stats['wins']} losses={self._stats['losses']} "
-                        f"pnl=${self._stats['total_pnl']:+,.2f}"
+
+                    status_msg = (
+                        f"OPTIONS CYCLE #{cycle_count}\n"
+                        f"Open: {len(self.open_trades)}/{self.max_open_positions}\n"
+                        f"Total trades: {self._stats['total_trades']}\n"
+                        f"W/L: {self._stats['wins']}/{self._stats['losses']}\n"
+                        f"PnL: ${self._stats['total_pnl']:+,.2f}"
                     )
+                    logger.info(status_msg)
+
+                    # Send scan summary to Telegram every 6 cycles (~30min at 5min interval)
+                    if cycle_count % 6 == 1:
+                        self.notifier.send_system_alert(f"OPTIONS SCAN\n{status_msg}")
                 else:
-                    from datetime import datetime, timezone
-                    now = datetime.now(timezone.utc)
-                    logger.info(
-                        f"Options market closed — {now.strftime('%H:%M UTC')} "
-                        f"(opens 9:45 ET / 14:45 UTC Mon-Fri)"
-                    )
+                    if cycle_count == 0:
+                        # First cycle and market closed — notify once
+                        now = datetime.now(timezone.utc)
+                        logger.info(
+                            f"Options market closed — {now.strftime('%H:%M UTC')} "
+                            f"(opens ~9:45 ET Mon-Fri)"
+                        )
+                        self.notifier.send_system_alert(
+                            f"OPTIONS: Market closed ({datetime.now(timezone.utc).strftime('%H:%M UTC')})\n"
+                            f"Will auto-scan when market opens ~9:45 ET"
+                        )
+                        cycle_count = -1  # So we don't spam this
             except KeyboardInterrupt:
                 logger.info("Options trader stopping...")
                 break
             except Exception as e:
                 logger.error(f"Options cycle error: {e}", exc_info=True)
+                self.notifier.send_system_alert(f"OPTIONS ERROR: {str(e)[:200]}")
 
             try:
                 time.sleep(scan_interval)
@@ -166,8 +179,11 @@ class OptionsTrader:
         self._check_positions()
 
         # Scan for new signals
+        logger.info("OPTIONS: Starting scan...")
         signals = self.scanner.scan_all()
+        logger.info(f"OPTIONS: Scan returned {len(signals)} signals")
         if not signals:
+            logger.info("OPTIONS: No signals this cycle — all symbols rejected by filters")
             return
 
         for signal in signals[:3]:

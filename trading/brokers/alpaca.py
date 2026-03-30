@@ -135,14 +135,20 @@ class AlpacaBroker(BaseBroker):
         tf = tf_map.get(timeframe, timeframe)
 
         try:
+            # Paper accounts get SIP feed by default; don't restrict to IEX
+            # IEX doesn't support all timeframes and returns limited data
+            params = {"timeframe": tf, "limit": count}
+
             resp = requests.get(
                 f"{self.data_url}/v2/stocks/{symbol}/bars",
                 headers=self._headers,
-                params={"timeframe": tf, "limit": count, "feed": "iex"},
-                timeout=10,
+                params=params,
+                timeout=15,
             )
             if resp.ok:
-                bars = resp.json().get("bars", [])
+                bars = resp.json().get("bars") or []
+                if not bars:
+                    logger.debug(f"No bars returned for {symbol} {tf}")
                 return [
                     {
                         "open": float(b["o"]),
@@ -154,8 +160,10 @@ class AlpacaBroker(BaseBroker):
                     }
                     for b in bars
                 ]
+            else:
+                logger.warning(f"Alpaca bars API error for {symbol} {tf}: {resp.status_code} {resp.text[:200]}")
         except requests.RequestException as e:
-            logger.debug(f"Candles error for {symbol}: {e}")
+            logger.warning(f"Candles error for {symbol} {tf}: {e}")
         return []
 
     def get_options_chain(

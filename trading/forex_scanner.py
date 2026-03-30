@@ -247,7 +247,12 @@ class ForexScanner:
             pip = 0.0001
 
         atr_pips = atr / pip
-        spread_pips = quote.spread / pip
+        spread_pips = (quote.ask - quote.bid) / pip if pip > 0 else 0
+
+        # Hard filter: reject if spread too wide (> 5 pips forex, > 50 pips crypto)
+        max_spread_pips = 50.0 if is_crypto else 5.0
+        if spread_pips > max_spread_pips:
+            return None
 
         # H4 swing levels for location scoring
         h4_recent_low = float(np.min(lows_h4[-10:]))
