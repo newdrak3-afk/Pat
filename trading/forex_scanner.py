@@ -11,6 +11,7 @@ from typing import Optional
 
 from trading.brokers.oanda import OandaBroker, FOREX_PAIRS, CRYPTO_PAIRS, ALL_PAIRS
 from trading.brokers.base import Quote
+from trading.confidence import compute_confidence, ConfidenceInputs
 
 logger = logging.getLogger(__name__)
 
@@ -185,99 +186,70 @@ class ForexScanner:
         # RSI (14-period)
         rsi = self._rsi(closes_h1, 14)
 
-        # MACD
-        macd = ema_12 - ema_26
-        signal_line = self._ema(
-            np.array([self._ema(closes_h1[:i+1], 12) - self._ema(closes_h1[:i+1], 26)
-                      for i in range(max(25, len(closes_h1)-10), len(closes_h1))]),
-            9
-        )
+        # MACD histogram (current and previous for momentum delta)
+        macd_line = ema_12 - ema_26
+        macd_values = np.array([
+            self._ema(closes_h1[:i+1], 12) - self._ema(closes_h1[:i+1], 26)
+            for i in range(max(25, len(closes_h1)-10), len(closes_h1))
+        ])
+        signal_line = self._ema(macd_values, 9)
+        macd_hist = macd_values[-1] - signal_line if len(macd_values) > 0 else 0.0
+        macd_hist_prev = (macd_values[-2] - self._ema(macd_values[:-1], 9)) if len(macd_values) > 1 else 0.0
 
         # ATR (Average True Range) for stop loss
         atr = self._atr(highs_h1, lows_h1, closes_h1, 14)
 
-        # Volume analysis
-        avg_volume = np.mean(volumes_h1[-20:])
-        recent_volume = np.mean(volumes_h1[-3:])
-        volume_spike = recent_volume > avg_volume * 1.5
+        # H4 ADX (trend strength)
+        highs_h4 = np.array([c["high"] for c in candles_h4])
+        lows_h4 = np.array([c["low"] for c in candles_h4])
+        adx_h4 = self._adx(highs_h4, lows_h4, closes_h4, 14)
 
-        # ─── H1 SIGNAL LOGIC (only in htf_bias direction) ───
+        # Regime detection (simple: ATR-based)
+        atr_20 = self._atr(highs_h1, lows_h1, closes_h1, 20)
+        atr_5 = self._atr(highs_h1[-6:], lows_h1[-6:], closes_h1[-6:], 5) if len(closes_h1) >= 6 else atr
+        regime = "trending" if adx_h4 >= 20 else "ranging"
+        if atr_5 > atr_20 * 2.0:
+            regime = "volatile"
 
-        score = 0.0
-        reasons = []
-        side = htf_bias  # Locked to higher-timeframe direction
-
-        # Higher-timeframe trend bonus (always applies since we passed the gate)
-        score += 0.25
-        reasons.append(f"HTF trend: D1={d1_trend} H4={h4_trend} → {htf_bias}")
-
-        # 1. H1 MA alignment with trend
-        if side == "buy":
-            if sma_20 > sma_50 and current_price > sma_20:
-                score += 0.15
-                reasons.append("H1 MAs aligned bullish")
-            elif closes_h1[-2] < sma_20 and current_price > sma_20:
-                score += 0.2
-                reasons.append("H1 pullback bounce above SMA20")
-        else:
-            if sma_20 < sma_50 and current_price < sma_20:
-                score += 0.15
-                reasons.append("H1 MAs aligned bearish")
-            elif closes_h1[-2] > sma_20 and current_price < sma_20:
-                score += 0.2
-                reasons.append("H1 pullback rejection below SMA20")
-
-        # 2. RSI — look for pullback entries, not extreme reversals
-        if side == "buy":
-            if 30 <= rsi <= 45:
-                score += 0.15
-                reasons.append(f"RSI pullback zone ({rsi:.0f})")
-            elif rsi < 30:
-                score += 0.1
-                reasons.append(f"RSI oversold ({rsi:.0f})")
-        else:
-            if 55 <= rsi <= 70:
-                score += 0.15
-                reasons.append(f"RSI pullback zone ({rsi:.0f})")
-            elif rsi > 70:
-                score += 0.1
-                reasons.append(f"RSI overbought ({rsi:.0f})")
-
-        # 3. MACD confirmation
-        if macd > 0 and side == "buy":
-            score += 0.1
-            reasons.append("MACD bullish")
-        elif macd < 0 and side == "sell":
-            score += 0.1
-            reasons.append("MACD bearish")
-
-        # 4. Volume confirmation
-        if volume_spike:
-            score += 0.1
-            reasons.append("Volume spike confirms move")
-
-        # 5. H1 trend strength
-        if side == "buy" and current_price > sma_50:
-            score += 0.05
-            reasons.append("Above SMA50")
-        elif side == "sell" and current_price < sma_50:
-            score += 0.05
-            reasons.append("Below SMA50")
-
-        # ─── FILTER ───
-        # Minimum 0.35 confidence (HTF trend alone gives 0.25, need H1 confirmation)
-        if score < 0.35:
-            return None
-
-        confidence = min(score, 0.95)
-
-        # Calculate pip value based on instrument type
+        # Pip value
         if is_crypto:
-            pip = 1.0  # Crypto moves in whole dollars
+            pip = 1.0
         elif "JPY" in symbol:
             pip = 0.01
         else:
             pip = 0.0001
+
+        atr_pips = atr / pip
+        spread_pips = quote.spread / pip
+
+        # ─── CONFIDENCE MODULE (ChatGPT structured scoring) ───
+
+        side = htf_bias  # Locked to higher-timeframe direction
+
+        inputs = ConfidenceInputs(
+            direction=side,
+            d1_trend=d1_trend,
+            h4_trend=h4_trend,
+            rsi_h1=rsi,
+            macd_hist_h1=macd_hist,
+            macd_hist_prev_h1=macd_hist_prev,
+            sma20_h1=sma_20,
+            sma50_h1=sma_50,
+            close_h1=float(closes_h1[-1]),
+            adx_h4=adx_h4,
+            atr_pips_h1=atr_pips,
+            spread_pips=spread_pips,
+            regime=regime,
+        )
+
+        result = compute_confidence(inputs)
+
+        # Minimum 0.35 to take a trade
+        if result.confidence < 0.35:
+            return None
+
+        confidence = result.confidence
+        reasons = result.reasons
 
         # Stop loss = 1.5x ATR, Take profit = 2x ATR (1:1.33 risk/reward)
         sl_distance = atr * 1.5
@@ -297,9 +269,9 @@ class ForexScanner:
 
         reasoning = (
             f"{'  |  '.join(reasons)}\n"
-            f"RSI: {rsi:.0f} | SMA20: {sma_20:.5f} | SMA50: {sma_50:.5f}\n"
+            f"RSI: {rsi:.0f} | ADX: {adx_h4:.0f} | Regime: {regime}\n"
             f"D1: {d1_trend} | H4: {h4_trend} | HTF bias: {htf_bias}\n"
-            f"ATR: {atr/pip:.1f} pips | SL: {sl_pips:.0f} pips | TP: {tp_pips:.0f} pips"
+            f"ATR: {atr_pips:.1f} pips | Spread: {spread_pips:.1f} pips | SL: {sl_pips:.0f} pips | TP: {tp_pips:.0f} pips"
         )
 
         return {
@@ -348,6 +320,58 @@ class ForexScanner:
 
         rs = avg_gain / avg_loss
         return 100.0 - (100.0 / (1.0 + rs))
+
+    def _adx(
+        self,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        period: int = 14,
+    ) -> float:
+        """Calculate Average Directional Index (trend strength)."""
+        if len(highs) < period + 2:
+            return 15.0  # Default to low trend strength
+
+        plus_dm = []
+        minus_dm = []
+        tr_list = []
+
+        for i in range(1, len(highs)):
+            up = highs[i] - highs[i - 1]
+            down = lows[i - 1] - lows[i]
+            plus_dm.append(up if up > down and up > 0 else 0)
+            minus_dm.append(down if down > up and down > 0 else 0)
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
+            tr_list.append(tr)
+
+        # Smoothed averages
+        atr_s = float(np.mean(tr_list[:period]))
+        plus_di_s = float(np.mean(plus_dm[:period]))
+        minus_di_s = float(np.mean(minus_dm[:period]))
+
+        dx_list = []
+        for i in range(period, len(tr_list)):
+            atr_s = atr_s - atr_s / period + tr_list[i]
+            plus_di_s = plus_di_s - plus_di_s / period + plus_dm[i]
+            minus_di_s = minus_di_s - minus_di_s / period + minus_dm[i]
+
+            if atr_s > 0:
+                plus_di = 100 * plus_di_s / atr_s
+                minus_di = 100 * minus_di_s / atr_s
+                di_sum = plus_di + minus_di
+                dx = 100 * abs(plus_di - minus_di) / di_sum if di_sum > 0 else 0
+                dx_list.append(dx)
+
+        if not dx_list:
+            return 15.0
+
+        # ADX = smoothed average of DX
+        adx = float(np.mean(dx_list[-period:])) if len(dx_list) >= period else float(np.mean(dx_list))
+        return adx
 
     def _atr(
         self,
