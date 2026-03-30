@@ -127,6 +127,7 @@ class AutoTrader:
 
         On restart, reconciles saved open trades against broker positions
         to avoid duplicate orders and drop stale entries.
+        If no state file exists (fresh deploy), syncs from broker directly.
         """
         state_file = "trading/data/auto_trader_state.json"
         try:
@@ -139,7 +140,55 @@ class AutoTrader:
                 reconciled = self._reconcile_open_trades(saved_open)
                 self.position_mgr.open_trades = reconciled
         except (FileNotFoundError, json.JSONDecodeError):
-            pass
+            # No state file (fresh deploy) — sync from broker
+            self._sync_from_broker()
+
+    def _sync_from_broker(self):
+        """Sync open trades from broker when no state file exists.
+
+        This handles fresh deploys on Railway where the state file is wiped.
+        Queries the broker for all open positions and registers them so
+        the bot knows about existing trades and won't open duplicates.
+        """
+        try:
+            if not self.oanda.connect():
+                return
+
+            broker_positions = self.oanda.get_positions()
+            if not broker_positions:
+                return
+
+            logger.info(f"Fresh deploy: syncing {len(broker_positions)} positions from broker")
+
+            for pos in broker_positions:
+                side = "buy" if pos.quantity > 0 else "sell"
+                trade_info = {
+                    "trade_id": f"synced_{pos.symbol}_{side}",
+                    "symbol": pos.symbol,
+                    "side": side,
+                    "units": abs(pos.quantity),
+                    "entry": pos.entry_price,
+                    "stop_loss": 0,
+                    "take_profit": 0,
+                    "confidence": 0,
+                    "reasoning": "Synced from broker on restart",
+                    "placed_at": datetime.utcnow().isoformat(),
+                    "status": "open",
+                }
+                self.position_mgr.open_trades[trade_info["trade_id"]] = trade_info
+
+                # Register in portfolio manager
+                if self.portfolio:
+                    self.portfolio.add_position(
+                        pos.symbol, side, abs(pos.quantity), pos.entry_price
+                    )
+
+            self._stats["total_trades"] = len(broker_positions)
+            logger.info(f"Synced {len(broker_positions)} positions from broker")
+            self._save_state()
+
+        except Exception as e:
+            logger.warning(f"Could not sync from broker: {e}")
 
     def _reconcile_open_trades(self, saved_open: dict) -> dict:
         """Reconcile saved open trades with actual broker positions.
