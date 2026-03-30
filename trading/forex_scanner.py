@@ -103,14 +103,21 @@ class ForexScanner:
 
         signals = []
 
+        skipped_reasons = {}
         for symbol in pairs:
             try:
                 signal = self._analyze_pair(symbol)
                 if signal:
                     signals.append(signal)
+                else:
+                    skipped_reasons[symbol] = "no signal"
             except Exception as e:
                 logger.debug(f"Error analyzing {symbol}: {e}")
+                skipped_reasons[symbol] = str(e)[:50]
                 continue
+
+        if skipped_reasons:
+            logger.info(f"Pairs skipped ({len(skipped_reasons)}): scanned {len(pairs)}, signals {len(signals)}")
 
         # Sort by confidence
         signals.sort(key=lambda x: x["confidence"], reverse=True)
@@ -177,14 +184,25 @@ class ForexScanner:
                        "flat"
 
         # Determine allowed trade direction
+        # Relaxed: allow trades when at least ONE higher timeframe is directional
+        # Confidence scoring will penalize weak alignment later
         if h4_trend == "up" and d1_trend in ("up", "flat"):
             htf_bias = "buy"
         elif h4_trend == "down" and d1_trend in ("down", "flat"):
             htf_bias = "sell"
-        elif d1_trend == "up" and h4_trend == "flat":
+        elif d1_trend == "up" and h4_trend in ("flat", "up"):
             htf_bias = "buy"
-        elif d1_trend == "down" and h4_trend == "flat":
+        elif d1_trend == "down" and h4_trend in ("flat", "down"):
             htf_bias = "sell"
+        elif h4_trend == "up" and d1_trend == "down":
+            # Conflicting: H4 up but D1 down — skip (counter-trend)
+            return None
+        elif h4_trend == "down" and d1_trend == "up":
+            # Conflicting: H4 down but D1 up — skip (counter-trend)
+            return None
+        elif h4_trend == "flat" and d1_trend == "flat":
+            # Both flat — no directional bias
+            return None
         else:
             return None
 

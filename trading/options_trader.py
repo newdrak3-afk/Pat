@@ -126,12 +126,27 @@ class OptionsTrader:
             f"Focus: SPY, QQQ first | AAPL, MSFT, NVDA when ideal"
         )
 
+        cycle_count = 0
         while True:
             try:
                 if is_options_market_open():
+                    cycle_count += 1
+                    logger.info(f"OPTIONS CYCLE #{cycle_count} starting...")
                     self._run_cycle()
+                    logger.info(
+                        f"OPTIONS CYCLE #{cycle_count} done — "
+                        f"open={len(self.open_trades)}/{self.max_open_positions} "
+                        f"trades={self._stats['total_trades']} "
+                        f"wins={self._stats['wins']} losses={self._stats['losses']} "
+                        f"pnl=${self._stats['total_pnl']:+,.2f}"
+                    )
                 else:
-                    logger.debug("Options market closed — waiting...")
+                    from datetime import datetime, timezone
+                    now = datetime.now(timezone.utc)
+                    logger.info(
+                        f"Options market closed — {now.strftime('%H:%M UTC')} "
+                        f"(opens 9:45 ET / 14:45 UTC Mon-Fri)"
+                    )
             except KeyboardInterrupt:
                 logger.info("Options trader stopping...")
                 break

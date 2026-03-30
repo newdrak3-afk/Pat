@@ -172,9 +172,14 @@ class LossAnalyzer:
     ) -> str:
         """Determine the category of failure."""
 
+        # ─── Forex-specific categorization ───
+        is_forex = trade.side in ("buy", "sell")
+        if is_forex:
+            return self._categorize_forex_loss(trade, prediction)
+
+        # ─── Prediction market categorization ───
         # Check for sentiment mismatch
         if trade.side == "Yes" and research.combined_sentiment > 0.2:
-            # Positive sentiment but market resolved No
             return "sentiment_mismatch"
         if trade.side == "No" and research.combined_sentiment < -0.2:
             return "sentiment_mismatch"
@@ -204,6 +209,24 @@ class LossAnalyzer:
             return self._llm_categorize(trade, market, research, prediction)
 
         return "unknown"
+
+    def _categorize_forex_loss(self, trade: Trade, prediction: Prediction) -> str:
+        """Categorize a forex trading loss based on available info."""
+        confidence = prediction.confidence if prediction else 0
+
+        # Overconfidence: high confidence but still lost
+        if confidence > 0.7:
+            return "overconfidence"
+
+        # Model drift: moderate confidence, market moved against
+        if confidence > 0.5:
+            return "model_drift"
+
+        # Low confidence trade that lost — shouldn't have been taken
+        if confidence < 0.45:
+            return "late_entry"
+
+        return "sentiment_mismatch"
 
     def _llm_categorize(
         self,
@@ -273,32 +296,54 @@ Respond with ONLY the category name (e.g., "sentiment_mismatch")."""
             )
 
         # Heuristic analysis
+        is_forex = trade.side in ("buy", "sell")
+
         lines = [
             f"LOSS ANALYSIS — Trade {trade.trade_id}",
             f"Category: {category}",
             f"",
-            f"Market: {market.question}",
-            f"Placed: {trade.side} @ {trade.entry_price:.3f} "
-            f"(${trade.amount:.2f})",
-            f"Result: PnL ${trade.pnl:.2f}",
-            f"",
-            f"What happened:",
         ]
+
+        if is_forex:
+            pair = trade.market_id.replace("_", "/") if trade.market_id else "Unknown"
+            lines.extend([
+                f"Pair: {pair}",
+                f"Side: {trade.side.upper()} @ {trade.entry_price:.5f}",
+                f"PnL: ${trade.pnl:.2f}",
+                f"Confidence: {prediction.confidence:.0%}" if prediction else "",
+                f"",
+                f"What happened:",
+            ])
+        else:
+            lines.extend([
+                f"Market: {market.question}",
+                f"Placed: {trade.side} @ {trade.entry_price:.3f} "
+                f"(${trade.amount:.2f})",
+                f"Result: PnL ${trade.pnl:.2f}",
+                f"",
+                f"What happened:",
+            ])
 
         cat_info = FAILURE_CATEGORIES.get(category, FAILURE_CATEGORIES["unknown"])
         lines.append(f"  {cat_info['description']}")
 
         # Specific analysis per category
         if category == "sentiment_mismatch":
-            lines.append(
-                f"  Sentiment was {research.sentiment_label} "
-                f"({research.combined_sentiment:+.2f}) but outcome went "
-                f"against the narrative."
-            )
-            lines.append(
-                f"  The market was correct at {prediction.market_price:.3f} "
-                f"while our model predicted {prediction.predicted_probability:.3f}."
-            )
+            if is_forex:
+                lines.append(
+                    f"  HTF trend aligned but price moved against the trade. "
+                    f"Possible late entry or news reversal."
+                )
+            else:
+                lines.append(
+                    f"  Sentiment was {research.sentiment_label} "
+                    f"({research.combined_sentiment:+.2f}) but outcome went "
+                    f"against the narrative."
+                )
+                lines.append(
+                    f"  The market was correct at {prediction.market_price:.3f} "
+                    f"while our model predicted {prediction.predicted_probability:.3f}."
+                )
 
         elif category == "low_liquidity_trap":
             lines.append(
@@ -307,8 +352,9 @@ Respond with ONLY the category name (e.g., "sentiment_mismatch")."""
             )
 
         elif category == "overconfidence":
+            conf = prediction.confidence if prediction else 0
             lines.append(
-                f"  Model confidence was {prediction.confidence:.3f} "
+                f"  Model confidence was {conf:.0%} "
                 f"but the prediction was wrong. Edge was overstated."
             )
 
@@ -323,13 +369,26 @@ Respond with ONLY the category name (e.g., "sentiment_mismatch")."""
                 f"but the narrative was misleading."
             )
 
-        lines.append(
-            f"\nPrediction breakdown:"
-            f"\n  XGBoost: {prediction.xgboost_probability:.3f}"
-            f"\n  LLM: {prediction.llm_probability:.3f}"
-            f"\n  Ensemble: {prediction.predicted_probability:.3f}"
-            f"\n  Market: {prediction.market_price:.3f}"
-        )
+        elif category == "model_drift":
+            lines.append(
+                f"  The market regime may have shifted. Strategy signals "
+                f"that worked before are no longer effective in current conditions."
+            )
+
+        elif category == "late_entry":
+            lines.append(
+                f"  Low confidence entry — signal was weak but trade was still taken. "
+                f"Consider raising the confidence threshold."
+            )
+
+        if not is_forex and prediction:
+            lines.append(
+                f"\nPrediction breakdown:"
+                f"\n  XGBoost: {prediction.xgboost_probability:.3f}"
+                f"\n  LLM: {prediction.llm_probability:.3f}"
+                f"\n  Ensemble: {prediction.predicted_probability:.3f}"
+                f"\n  Market: {prediction.market_price:.3f}"
+            )
 
         return "\n".join(lines)
 

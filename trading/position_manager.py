@@ -135,27 +135,31 @@ class PositionManager:
         return result
 
     def _resolve_trade(self, trade_id: str, info: dict) -> tuple[str, float]:
-        """Determine outcome of a closed trade and update all systems."""
+        """Determine outcome of a closed trade and update all systems.
+
+        Uses actual broker PnL when available (from closed transactions),
+        falls back to quote-based calculation.
+        """
         quote = self.oanda.get_quote(info["symbol"]) if self.oanda else None
         current = quote.mid if quote else info["entry"]
 
         entry = info["entry"]
         side = info["side"]
         units = info["units"]
-        tp = info["take_profit"]
-        sl = info["stop_loss"]
 
-        # Determine win/loss
-        if side == "buy":
-            if current >= tp:
-                outcome, pnl = "win", abs(tp - entry) * units
-            else:
-                outcome, pnl = "loss", -abs(entry - sl) * units
+        # Try to get actual PnL from broker's closed transactions
+        actual_pnl = self._get_broker_pnl(trade_id, info)
+
+        if actual_pnl is not None:
+            pnl = actual_pnl
+            outcome = "win" if pnl > 0 else "loss"
         else:
-            if current <= tp:
-                outcome, pnl = "win", abs(entry - tp) * units
+            # Fallback: calculate from current price vs entry
+            if side == "buy":
+                pnl = (current - entry) * units
             else:
-                outcome, pnl = "loss", -abs(sl - entry) * units
+                pnl = (entry - current) * units
+            outcome = "win" if pnl > 0 else "loss"
 
         info["status"] = outcome
         info["pnl"] = pnl
@@ -267,6 +271,22 @@ class PositionManager:
             max_drawdown=dd_info.max_drawdown_pct_seen if dd_info else 0,
             balance=balance,
         )
+
+    def _get_broker_pnl(self, trade_id: str, info: dict) -> Optional[float]:
+        """Try to get actual realized PnL from broker for a closed trade.
+
+        Queries OANDA's transaction history for the actual closed PnL
+        rather than guessing from TP/SL levels.
+        """
+        if not self.oanda:
+            return None
+        try:
+            # OANDA provides realized PnL on closed trades via the transactions endpoint
+            if hasattr(self.oanda, 'get_closed_trade_pnl'):
+                return self.oanda.get_closed_trade_pnl(trade_id)
+        except Exception as e:
+            logger.debug(f"Could not get broker PnL for {trade_id}: {e}")
+        return None
 
     @property
     def open_count(self) -> int:

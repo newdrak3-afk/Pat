@@ -165,7 +165,7 @@ class AlpacaBroker(BaseBroker):
         option_type: str = None,
     ) -> list[OptionQuote]:
         """
-        Get options chain for a stock.
+        Get options chain for a stock with live quotes.
 
         Args:
             symbol: Underlying stock symbol (e.g. "SPY")
@@ -173,7 +173,7 @@ class AlpacaBroker(BaseBroker):
             option_type: "call" or "put"
         """
         try:
-            params = {"underlying_symbols": symbol, "limit": 100}
+            params = {"underlying_symbols": symbol, "limit": 100, "status": "active"}
             if expiration_date:
                 params["expiration_date"] = expiration_date
             if option_type:
@@ -185,21 +185,71 @@ class AlpacaBroker(BaseBroker):
                 params=params,
                 timeout=10,
             )
-            if resp.ok:
-                contracts = resp.json().get("option_contracts", [])
-                options = []
-                for c in contracts:
+            if not resp.ok:
+                logger.warning(f"Options chain request failed for {symbol}: {resp.status_code} {resp.text[:200]}")
+                return []
+
+            contracts = resp.json().get("option_contracts", [])
+            if not contracts:
+                logger.info(f"No option contracts returned for {symbol}")
+                return []
+
+            # Collect contract symbols to fetch live quotes in batch
+            contract_map = {}
+            for c in contracts:
+                sym = c.get("symbol", "")
+                if sym:
+                    contract_map[sym] = c
+
+            # Fetch live quotes for all contracts (batch up to 100)
+            options = []
+            symbols_list = list(contract_map.keys())
+
+            for batch_start in range(0, len(symbols_list), 50):
+                batch = symbols_list[batch_start:batch_start + 50]
+                quotes = self._get_option_quotes_batch(batch)
+
+                for sym in batch:
+                    c = contract_map[sym]
+                    q = quotes.get(sym, {})
+                    bid = float(q.get("bp", 0))
+                    ask = float(q.get("ap", 0))
+
                     options.append(OptionQuote(
-                        symbol=c.get("symbol", ""),
+                        symbol=sym,
                         strike=float(c.get("strike_price", 0)),
                         expiration=c.get("expiration_date", ""),
                         option_type=c.get("type", ""),
                         open_interest=int(c.get("open_interest", 0)),
+                        bid=bid,
+                        ask=ask,
                     ))
-                return options
+
+            logger.info(f"Options chain for {symbol}: {len(options)} contracts with quotes")
+            return options
+
         except requests.RequestException as e:
-            logger.debug(f"Options chain error for {symbol}: {e}")
+            logger.warning(f"Options chain error for {symbol}: {e}")
         return []
+
+    def _get_option_quotes_batch(self, symbols: list[str]) -> dict:
+        """Fetch live quotes for multiple option symbols at once."""
+        if not symbols:
+            return {}
+        try:
+            resp = requests.get(
+                f"{self.data_url}/v1beta1/options/quotes/latest",
+                headers=self._headers,
+                params={"symbols": ",".join(symbols), "feed": "indicative"},
+                timeout=15,
+            )
+            if resp.ok:
+                return resp.json().get("quotes", {})
+            else:
+                logger.debug(f"Batch option quotes failed: {resp.status_code}")
+        except requests.RequestException as e:
+            logger.debug(f"Batch option quotes error: {e}")
+        return {}
 
     def get_option_quote(self, option_symbol: str) -> Optional[OptionQuote]:
         """Get latest quote for a specific option contract."""

@@ -377,9 +377,26 @@ class TelegramBot:
         self._send("\n".join(lines))
 
     def _cmd_lessons(self, args):
+        # Try loss analyzer first (JSON file)
         if self._loss_analyzer:
             summary = self._loss_analyzer.get_lessons_summary()
-            self._send(f"<pre>{summary[:3900]}</pre>")
+            if summary and summary != "No lessons learned yet.":
+                self._send(f"<pre>{summary[:3900]}</pre>")
+                return
+
+        # Fallback: read from DB
+        if self._db:
+            lessons = self._db.get_lessons(limit=20)
+            if lessons:
+                lines = [f"LESSONS FROM DB ({len(lessons)} total)\n"]
+                for l in lessons[:10]:
+                    lines.append(
+                        f"[{l.get('category', '?')}] {l.get('description', '')[:100]}\n"
+                        f"  Rule: {l.get('rule_added', 'N/A')}\n"
+                    )
+                self._send(f"<pre>{chr(10).join(lines)[:3900]}</pre>")
+            else:
+                self._send("No lessons learned yet. Lessons are recorded after each losing trade.")
         else:
             self._send("Loss analyzer not available")
 

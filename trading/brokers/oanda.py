@@ -492,6 +492,29 @@ class OandaBroker(BaseBroker):
         except requests.RequestException as e:
             return OrderResult(success=False, message=str(e))
 
+    def get_closed_trade_pnl(self, trade_id: str) -> Optional[float]:
+        """Get the actual realized PnL for a closed trade from OANDA.
+
+        Queries recent transactions to find the close transaction for this trade.
+        """
+        try:
+            result = self._get(
+                f"/accounts/{self.account_id}/transactions",
+                params={"type": "ORDER_FILL", "count": 50},
+            )
+            if result and "transactions" in result:
+                for txn in result["transactions"]:
+                    # Look for fills that reference our trade
+                    if txn.get("tradesClosed"):
+                        for closed in txn["tradesClosed"]:
+                            if closed.get("tradeID") == trade_id:
+                                return float(closed.get("realizedPL", 0))
+                    if txn.get("tradeReduced", {}).get("tradeID") == trade_id:
+                        return float(txn["tradeReduced"].get("realizedPL", 0))
+        except Exception as e:
+            logger.debug(f"Could not fetch PnL for trade {trade_id}: {e}")
+        return None
+
     def get_spread_for_pairs(self) -> list[dict]:
         """Get current spreads for all major pairs — useful for scanning."""
         quotes = self.get_quotes_bulk(FOREX_PAIRS)

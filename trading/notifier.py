@@ -131,14 +131,17 @@ class TelegramNotifier:
 
     def send_win_alert(self, trade: Trade, pnl: float, bankroll: float):
         """Send alert on a winning trade."""
+        pair = trade.market_id.replace("_", "/") if hasattr(trade, 'market_id') else ""
         msg = (
             f"<b>WIN +${pnl:.2f}</b>\n"
             f"\n"
-            f"{trade.market_question[:80]}\n"
-            f"Side: {trade.side} @ {trade.entry_price:.3f}\n"
-            f"Bet: ${trade.amount:.2f}\n"
+            f"{pair or trade.market_question[:80]}\n"
+            f"Side: {trade.side} @ {trade.entry_price:.5f}\n"
+            f"Invested: <b>${trade.amount:.2f}</b>\n"
+            f"Returned: <b>${trade.amount + pnl:.2f}</b>\n"
+            f"Profit: <b>+${pnl:.2f}</b>\n"
             f"\n"
-            f"Bankroll: <b>${bankroll:.2f}</b>"
+            f"Balance: <b>${bankroll:,.2f}</b>"
         )
         self._send(msg)
 
@@ -150,14 +153,17 @@ class TelegramNotifier:
         lesson: str,
     ):
         """Send alert on a losing trade with lesson learned."""
+        pair = trade.market_id.replace("_", "/") if hasattr(trade, 'market_id') else ""
         msg = (
             f"<b>LOSS -${abs(pnl):.2f}</b>\n"
             f"\n"
-            f"{trade.market_question[:80]}\n"
-            f"Side: {trade.side} @ {trade.entry_price:.3f}\n"
-            f"Bet: ${trade.amount:.2f}\n"
+            f"{pair or trade.market_question[:80]}\n"
+            f"Side: {trade.side} @ {trade.entry_price:.5f}\n"
+            f"Invested: <b>${trade.amount:.2f}</b>\n"
+            f"Returned: <b>${max(0, trade.amount + pnl):.2f}</b>\n"
+            f"Loss: <b>-${abs(pnl):.2f}</b>\n"
             f"\n"
-            f"Bankroll: <b>${bankroll:.2f}</b>\n"
+            f"Balance: <b>${bankroll:,.2f}</b>\n"
             f"\n"
             f"<b>What went wrong:</b>\n"
             f"{lesson[:300]}"

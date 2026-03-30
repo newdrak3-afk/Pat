@@ -72,26 +72,40 @@ class OptionsScanner:
     def scan_all(self) -> list[dict]:
         """Scan all symbols, return sorted signals."""
         signals = []
+        scan_log = []
+
+        logger.info(f"OPTIONS SCAN: scanning {len(TIER1_SYMBOLS)} T1 + {len(TIER2_SYMBOLS)} T2 symbols")
 
         # Tier 1 first (SPY, QQQ)
         for symbol in TIER1_SYMBOLS:
-            try:
-                for mode in ["momentum", "swing"]:
+            for mode in ["momentum", "swing"]:
+                try:
                     signal = self._analyze_symbol(symbol, mode, tier=1)
                     if signal:
                         signals.append(signal)
-            except Exception as e:
-                logger.debug(f"Options scan error {symbol}: {e}")
+                        scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
+                    else:
+                        scan_log.append(f"  {symbol} {mode}: no setup")
+                except Exception as e:
+                    scan_log.append(f"  {symbol} {mode}: ERROR {e}")
+                    logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
 
         # Tier 2 only if setup quality is high
         for symbol in TIER2_SYMBOLS:
-            try:
-                for mode in ["momentum", "swing"]:
+            for mode in ["momentum", "swing"]:
+                try:
                     signal = self._analyze_symbol(symbol, mode, tier=2)
                     if signal:
                         signals.append(signal)
-            except Exception as e:
-                logger.debug(f"Options scan error {symbol}: {e}")
+                        scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
+                    else:
+                        scan_log.append(f"  {symbol} {mode}: no setup")
+                except Exception as e:
+                    scan_log.append(f"  {symbol} {mode}: ERROR {e}")
+                    logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
+
+        logger.info(f"OPTIONS SCAN RESULTS:\n" + "\n".join(scan_log))
+        logger.info(f"OPTIONS: {len(signals)} signals found from {len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS)} symbols")
 
         signals.sort(key=lambda x: x["confidence"], reverse=True)
         return signals
