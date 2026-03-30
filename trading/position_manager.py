@@ -198,39 +198,55 @@ class PositionManager:
         """Send win/loss notification and log lessons for losses."""
         balance = self.oanda.get_account_balance() if self.oanda else 0
 
-        trade_obj = Trade(
-            trade_id=trade_id,
-            market_id=info["symbol"],
-            market_question=f"Forex: {info['symbol']}",
-            side=info["side"],
-            amount=abs(pnl),
-            entry_price=info["entry"],
-            pnl=pnl,
-            outcome=outcome,
-        )
+        # Build trade object for notifications
+        units = info.get("units", 0)
+        entry = info["entry"]
+        confidence = info.get("confidence", 0)
+        pair = info["symbol"].replace("_", "/")
 
         if outcome == "win":
             if self.notifier:
-                self.notifier.send_win_alert(trade_obj, pnl, balance)
+                self.notifier.send_forex_result(
+                    pair=pair,
+                    side=info["side"],
+                    entry=entry,
+                    units=units,
+                    pnl=pnl,
+                    confidence=confidence,
+                    balance=balance,
+                    outcome="WIN",
+                )
             logger.info(f"WIN: {info['symbol']} +${pnl:.2f}")
         else:
             # Analyze loss
+            lesson_text = ""
             if self.loss_analyzer:
+                trade_obj = Trade(
+                    trade_id=trade_id,
+                    market_id=info["symbol"],
+                    market_question=f"Forex: {info['symbol']}",
+                    side=info["side"],
+                    amount=abs(pnl),
+                    entry_price=entry,
+                    pnl=pnl,
+                    outcome=outcome,
+                )
                 market = Market(
                     market_id=info["symbol"],
                     question=f"Forex: {info['symbol']}",
                     category="forex",
-                    current_price=info.get("exit_price", info["entry"]),
+                    current_price=info.get("exit_price", entry),
                 )
                 prediction = Prediction(
                     market_id=info["symbol"],
-                    market_price=info["entry"],
-                    predicted_probability=info["confidence"],
-                    confidence=info["confidence"],
+                    market_price=entry,
+                    predicted_probability=confidence,
+                    confidence=confidence,
                 )
                 research = ResearchResult(market_id=info["symbol"])
 
                 lesson = self.loss_analyzer.analyze_loss(trade_obj, market, research, prediction)
+                lesson_text = lesson.description
 
                 if self.db:
                     self.db.save_lesson(
@@ -240,14 +256,22 @@ class PositionManager:
                         rule_added=lesson.rule_added,
                     )
 
-                if self.notifier:
-                    self.notifier.send_loss_alert(trade_obj, pnl, balance, lesson.description)
-
                 logger.info(f"LOSS: {info['symbol']} -${abs(pnl):.2f} | {lesson.rule_added}")
             else:
-                if self.notifier:
-                    self.notifier.send_loss_alert(trade_obj, pnl, balance, "")
                 logger.info(f"LOSS: {info['symbol']} -${abs(pnl):.2f}")
+
+            if self.notifier:
+                self.notifier.send_forex_result(
+                    pair=pair,
+                    side=info["side"],
+                    entry=entry,
+                    units=units,
+                    pnl=pnl,
+                    confidence=confidence,
+                    balance=balance,
+                    outcome="LOSS",
+                    lesson=lesson_text,
+                )
 
             if self.risk_mgr:
                 self.risk_mgr.resolve_trade(trade_id, pnl)

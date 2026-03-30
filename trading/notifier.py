@@ -298,6 +298,48 @@ class TelegramNotifier:
         )
         self._send(msg)
 
+    # ─── FOREX RESULT ALERTS (WIN/LOSS) ───
+
+    def send_forex_result(
+        self,
+        pair: str,
+        side: str,
+        entry: float,
+        units: float,
+        pnl: float,
+        confidence: float,
+        balance: float,
+        outcome: str,
+        lesson: str = "",
+    ):
+        """Send clean forex trade result (win or loss)."""
+        direction = "BUY (Long)" if side == "buy" else "SELL (Short)"
+        pnl_sign = "+" if pnl >= 0 else ""
+
+        msg = (
+            f"<b>{'🟢' if outcome == 'WIN' else '🔴'} {outcome} {pnl_sign}${pnl:.2f}</b>\n"
+            f"\n"
+            f"<b>{pair}</b> — {direction}\n"
+            f"Entry: {entry:.5f}\n"
+            f"Units: {units:,.0f}\n"
+            f"Confidence: {confidence:.0%}\n"
+            f"\n"
+            f"P&L: <b>{pnl_sign}${pnl:.2f}</b>\n"
+            f"Balance: <b>${balance:,.2f}</b>"
+        )
+
+        if lesson and outcome == "LOSS":
+            # Trim to key info only
+            lesson_short = lesson.split("\n")
+            # Get category and what happened lines
+            key_lines = [l for l in lesson_short if any(
+                k in l.lower() for k in ["category:", "what happened", "entered", "confidence", "trend", "regime"]
+            )]
+            if key_lines:
+                msg += f"\n\n<b>Analysis:</b>\n" + "\n".join(key_lines[:4])
+
+        self._send(msg)
+
     # ─── SYSTEM ALERTS ───
 
     def send_system_alert(self, message: str):
