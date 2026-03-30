@@ -126,7 +126,12 @@ class AlpacaBroker(BaseBroker):
 
         Timeframe mapping: H1 -> 1Hour, H4 -> 4Hour, D -> 1Day
         """
-        tf_map = {"H1": "1Hour", "H4": "4Hour", "D": "1Day", "1Hour": "1Hour", "4Hour": "4Hour", "1Day": "1Day"}
+        tf_map = {
+            "H1": "1Hour", "H4": "4Hour", "D": "1Day",
+            "M15": "15Min", "M5": "5Min",
+            "1Hour": "1Hour", "4Hour": "4Hour", "1Day": "1Day",
+            "15Min": "15Min", "5Min": "5Min",
+        }
         tf = tf_map.get(timeframe, timeframe)
 
         try:
