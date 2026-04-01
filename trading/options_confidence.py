@@ -326,6 +326,7 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     )
 
 
-# Thresholds
-MOMENTUM_THRESHOLD = 0.55
-SWING_THRESHOLD = 0.50
+# Thresholds — lowered for practice/paper mode so the bot actually trades.
+# In live mode, raise these back to 0.55 / 0.50 for tighter filtering.
+MOMENTUM_THRESHOLD = 0.40
+SWING_THRESHOLD = 0.35

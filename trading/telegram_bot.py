@@ -204,6 +204,10 @@ class TelegramBot:
             "/why": self._cmd_why,
             "/options": self._cmd_options,
             "/testoptions": self._cmd_testoptions,
+            "/optionscan": self._cmd_optionscan,
+            "/optiontrade": self._cmd_optiontrade,
+            "/optionpositions": self._cmd_optionpositions,
+            "/optionrisk": self._cmd_optionrisk,
             "/heartbeat": self._cmd_heartbeat,
         }
 
@@ -246,6 +250,12 @@ class TelegramBot:
             "/set key value — Change a setting\n"
             "/mode [dev|paper|practice|live] — Switch profile\n"
             "/options — Options trader status\n\n"
+            "<b>Options:</b>\n"
+            "/optionscan — Force options scan now\n"
+            "/optiontrade — Options trading stats\n"
+            "/optionpositions — Open options positions + P&L\n"
+            "/optionrisk — View/adjust options risk settings\n"
+            "/testoptions — Diagnostic: test Alpaca data\n\n"
             "<b>Emergency:</b>\n"
             "/kill — STOP everything immediately\n"
             "/safe — Safe mode (close all, stop trading)\n\n"
@@ -752,6 +762,270 @@ class TelegramBot:
 
         self._send("\n".join(lines))
 
+    def _cmd_optionscan(self, args):
+        """Force an options scan or show last scan results."""
+        if not self._options_trader:
+            self._send("Options trader not active. Set ALPACA_API_KEY to enable.")
+            return
+
+        broker = self._options_trader.broker
+        if not broker.connected:
+            if not broker.connect():
+                self._send("Cannot connect to Alpaca.")
+                return
+
+        from trading.options_scanner import OptionsScanner, is_options_market_open
+
+        if not is_options_market_open():
+            self._send(
+                "<b>OPTIONS SCAN</b>\n\n"
+                "Market is closed right now.\n"
+                "Options hours: Mon-Fri 9:45 AM - 3:45 PM ET\n\n"
+                "Scanning anyway for diagnostics..."
+            )
+
+        self._send("Scanning options... (SPY, QQQ, AAPL, MSFT, NVDA)")
+
+        try:
+            scanner = self._options_trader.scanner or OptionsScanner(broker)
+            signals = scanner.scan_all()
+
+            if not signals:
+                self._send(
+                    "<b>OPTIONS SCAN — 0 signals</b>\n\n"
+                    "No setups passed confidence threshold.\n"
+                    "Thresholds: Momentum 0.40 | Swing 0.35\n\n"
+                    "Use /testoptions to check data quality."
+                )
+                return
+
+            lines = [f"<b>OPTIONS SCAN — {len(signals)} signal(s)</b>\n"]
+            for s in signals[:5]:
+                direction = "CALL" if s["side"] == "buy" else "PUT"
+                contract = s.get("contract")
+                strike = f"${contract.strike:.0f}" if contract else "?"
+                exp = contract.expiration if contract else "?"
+                premium = f"${contract.mid:.2f}" if contract else "?"
+
+                lines.append(
+                    f"\n<b>{s['symbol']} {direction} {strike} exp {exp}</b>\n"
+                    f"Mode: {s.get('mode', '?').upper()} | "
+                    f"Tier: {'SPY/QQQ' if s.get('tier') == 1 else 'Single'}\n"
+                    f"Confidence: <b>{s['confidence']:.0%}</b>\n"
+                    f"Premium: {premium}\n"
+                    f"{s.get('reasoning', '')[:200]}"
+                )
+
+            open_count = len(self._options_trader.open_trades)
+            max_pos = self._options_trader.max_open_positions
+            lines.append(f"\nOpen: {open_count}/{max_pos}")
+
+            if open_count >= max_pos:
+                lines.append("Max positions reached — no new trades until one closes.")
+
+            self._send("\n".join(lines))
+        except Exception as e:
+            self._send(f"Options scan error: {str(e)[:300]}")
+
+    def _cmd_optiontrade(self, args):
+        """Toggle options auto-trading on/off or show status."""
+        if not self._options_trader:
+            self._send("Options trader not active. Set ALPACA_API_KEY to enable.")
+            return
+
+        if not args:
+            # Show current state
+            stats = self._options_trader._stats
+            total = stats["wins"] + stats["losses"]
+            win_rate = (stats["wins"] / total * 100) if total > 0 else 0
+            open_count = len(self._options_trader.open_trades)
+
+            self._send(
+                f"<b>OPTIONS TRADING</b>\n\n"
+                f"Total trades: {stats['total_trades']}\n"
+                f"Momentum: {stats.get('momentum_trades', 0)} | "
+                f"Swing: {stats.get('swing_trades', 0)}\n"
+                f"W/L: {stats['wins']}/{stats['losses']} "
+                f"({win_rate:.0f}%)\n"
+                f"PnL: <b>${stats['total_pnl']:+,.2f}</b>\n"
+                f"Open: {open_count}/{self._options_trader.max_open_positions}\n"
+                f"Cycles: {stats.get('cycles', 0)}\n\n"
+                f"Max premium: ${self._options_trader.max_premium_per_trade:.0f}\n"
+                f"Max positions: {self._options_trader.max_open_positions}"
+            )
+            return
+
+        action = args[0].lower()
+        if action in ("on", "true", "1", "enable"):
+            self._send(
+                "<b>OPTIONS TRADING: ON</b>\n\n"
+                "Options auto-trading is controlled by the options thread.\n"
+                "It scans every 5 minutes during market hours.\n"
+                "Use /optionscan to force a scan now."
+            )
+        elif action in ("off", "false", "0", "disable"):
+            self._send(
+                "<b>OPTIONS TRADING</b>\n\n"
+                "Options run on a separate thread and can't be paused individually yet.\n"
+                "Use /kill to stop ALL trading, or /safe to close all positions."
+            )
+        else:
+            self._send("Usage: /optiontrade [on|off]")
+
+    def _cmd_optionpositions(self, args):
+        """Show open options positions with live P&L."""
+        if not self._options_trader:
+            self._send("Options trader not active. Set ALPACA_API_KEY to enable.")
+            return
+
+        open_trades = self._options_trader.open_trades
+        if not open_trades:
+            self._send(
+                "<b>OPTIONS POSITIONS</b>\n\n"
+                "No open options positions.\n\n"
+                f"Total trades: {self._options_trader._stats['total_trades']}\n"
+                f"PnL: ${self._options_trader._stats['total_pnl']:+,.2f}"
+            )
+            return
+
+        lines = [f"<b>OPTIONS POSITIONS ({len(open_trades)})</b>\n"]
+
+        broker = self._options_trader.broker
+        positions = {}
+        try:
+            pos_list = broker.get_positions()
+            positions = {p.symbol: p for p in pos_list}
+        except Exception:
+            pass
+
+        for tid, info in open_trades.items():
+            opt_sym = info.get("option_symbol", "?")
+            direction = info.get("option_type", "?").upper()
+            mode = info.get("mode", "?").upper()
+            entry_premium = info.get("entry_premium", 0)
+
+            # Get live price if available
+            pos = positions.get(opt_sym)
+            if pos:
+                current = pos.current_price
+                pnl_pct = ((current - entry_premium) / entry_premium * 100) if entry_premium > 0 else 0
+                pnl_dollar = (current - entry_premium) * 100
+            else:
+                current = entry_premium
+                pnl_pct = 0
+                pnl_dollar = 0
+
+            # Time held
+            try:
+                placed = datetime.fromisoformat(info["placed_at"].replace("Z", "+00:00"))
+                hours_held = (datetime.now(placed.tzinfo or None) - placed).total_seconds() / 3600
+                time_str = f"{hours_held:.1f}h"
+            except Exception:
+                time_str = "?"
+
+            rules = self._options_trader.exit_rules.get(info.get("mode", "swing"), {})
+            partial = "YES" if info.get("partial_taken") else "no"
+
+            lines.append(
+                f"\n<b>{info['symbol']} {direction} ${info.get('strike', '?')}</b>\n"
+                f"Mode: {mode} | Exp: {info.get('expiration', '?')} ({info.get('dte', '?')} DTE)\n"
+                f"Entry: ${entry_premium:.2f} | Now: ${current:.2f}\n"
+                f"P&L: <b>{'+' if pnl_pct >= 0 else ''}{pnl_pct:.1f}%</b> (${pnl_dollar:+.2f})\n"
+                f"Held: {time_str} | Partial TP: {partial}\n"
+                f"TP: {rules.get('tp_pct', 0):.0%} | SL: {rules.get('sl_pct', 0):.0%} | "
+                f"Time stop: {rules.get('time_stop_hours', '?')}h\n"
+                f"Confidence: {info.get('confidence', 0):.0%}"
+            )
+
+        self._send("\n".join(lines))
+
+    def _cmd_optionrisk(self, args):
+        """Show or adjust options risk settings."""
+        if not self._options_trader:
+            self._send("Options trader not active. Set ALPACA_API_KEY to enable.")
+            return
+
+        trader = self._options_trader
+
+        if args and len(args) >= 2:
+            key = args[0].lower()
+            try:
+                value = float(args[1])
+            except ValueError:
+                self._send(f"Invalid value: {args[1]}")
+                return
+
+            if key == "maxpremium":
+                trader.max_premium_per_trade = value
+                trader._save_state()
+                self._send(f"Max premium per trade set to <b>${value:.0f}</b>")
+            elif key == "maxpositions":
+                trader.max_open_positions = int(value)
+                trader._save_state()
+                self._send(f"Max open positions set to <b>{int(value)}</b>")
+            elif key == "tp_momentum":
+                trader.exit_rules["momentum"]["tp_pct"] = value / 100
+                self._send(f"Momentum TP set to <b>{value:.0f}%</b>")
+            elif key == "sl_momentum":
+                trader.exit_rules["momentum"]["sl_pct"] = value / 100
+                self._send(f"Momentum SL set to <b>{value:.0f}%</b>")
+            elif key == "tp_swing":
+                trader.exit_rules["swing"]["tp_pct"] = value / 100
+                self._send(f"Swing TP set to <b>{value:.0f}%</b>")
+            elif key == "sl_swing":
+                trader.exit_rules["swing"]["sl_pct"] = value / 100
+                self._send(f"Swing SL set to <b>{value:.0f}%</b>")
+            else:
+                self._send(
+                    f"Unknown setting: {key}\n\n"
+                    "Available: maxpremium, maxpositions, "
+                    "tp_momentum, sl_momentum, tp_swing, sl_swing"
+                )
+            return
+
+        # Show current risk settings
+        from trading.options_confidence import MOMENTUM_THRESHOLD, SWING_THRESHOLD
+
+        balance = 0
+        try:
+            balance = trader.broker.get_account_balance()
+        except Exception:
+            pass
+
+        stats = trader._stats
+        total = stats["wins"] + stats["losses"]
+        win_rate = (stats["wins"] / total * 100) if total > 0 else 0
+
+        self._send(
+            f"<b>OPTIONS RISK SETTINGS</b>\n\n"
+            f"<b>Account:</b>\n"
+            f"Balance: ${balance:,.2f}\n"
+            f"Open: {len(trader.open_trades)}/{trader.max_open_positions}\n"
+            f"Max premium/trade: ${trader.max_premium_per_trade:.0f}\n\n"
+            f"<b>Confidence thresholds:</b>\n"
+            f"Momentum: {MOMENTUM_THRESHOLD:.0%}\n"
+            f"Swing: {SWING_THRESHOLD:.0%}\n"
+            f"Tier 2 bonus: +10%\n\n"
+            f"<b>Momentum exits:</b>\n"
+            f"TP: {trader.exit_rules['momentum']['tp_pct']:.0%} | "
+            f"SL: {trader.exit_rules['momentum']['sl_pct']:.0%}\n"
+            f"Partial: {trader.exit_rules['momentum']['partial_tp_pct']:.0%} | "
+            f"Time stop: {trader.exit_rules['momentum']['time_stop_hours']}h\n\n"
+            f"<b>Swing exits:</b>\n"
+            f"TP: {trader.exit_rules['swing']['tp_pct']:.0%} | "
+            f"SL: {trader.exit_rules['swing']['sl_pct']:.0%}\n"
+            f"Partial: {trader.exit_rules['swing']['partial_tp_pct']:.0%} | "
+            f"Time stop: {trader.exit_rules['swing']['time_stop_hours']}h\n\n"
+            f"<b>Performance:</b>\n"
+            f"W/L: {stats['wins']}/{stats['losses']} ({win_rate:.0f}%)\n"
+            f"PnL: ${stats['total_pnl']:+,.2f}\n\n"
+            f"<b>Adjust:</b>\n"
+            f"/optionrisk maxpremium 300\n"
+            f"/optionrisk maxpositions 5\n"
+            f"/optionrisk tp_momentum 40\n"
+            f"/optionrisk sl_swing 50"
+        )
+
     def _cmd_news(self, args):
         """Show current news sentiment and headlines."""
         try:
@@ -840,8 +1114,12 @@ class TelegramBot:
             lines.append("OANDA: not configured")
 
         if self._options_trader:
-            opt_ok = getattr(self._options_trader, "connected", False)
-            lines.append(f"Options: {'UP' if opt_ok else 'DOWN'}")
+            opt_ok = getattr(self._options_trader.broker, "connected", False)
+            opt_trades = self._options_trader._stats.get("total_trades", 0)
+            opt_cycles = self._options_trader._stats.get("cycles", 0)
+            opt_open = len(self._options_trader.open_trades)
+            lines.append(f"Options: {'UP' if opt_ok else 'DOWN'} | "
+                        f"{opt_trades} trades | {opt_open} open | {opt_cycles} cycles")
 
         # Last scan time
         if self._last_scan_time:

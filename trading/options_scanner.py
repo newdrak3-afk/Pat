@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # Priority tiers — SPY/QQQ first, single names only when setup is strong
 TIER1_SYMBOLS = ["SPY", "QQQ"]
 TIER2_SYMBOLS = ["AAPL", "MSFT", "NVDA"]
-TIER2_CONFIDENCE_BONUS = 0.10  # Tier 2 needs this much MORE confidence to trade
+TIER2_CONFIDENCE_BONUS = 0.05  # Tier 2 needs slightly more confidence (was 0.10)
 
 # Market hours (UTC)
 MARKET_OPEN_UTC = 14 * 60 + 30   # 9:30 ET = 14:30 UTC
