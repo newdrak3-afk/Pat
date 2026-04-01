@@ -225,12 +225,38 @@ def cmd_auto(orch: Orchestrator):
     # Start options trader in background if Alpaca is configured
     if os.getenv("ALPACA_API_KEY"):
         from trading.options_trader import OptionsTrader
+        import time as _time
+
         options = OptionsTrader(orch.config)
         # Wire options trader into telegram bot
         trader.telegram_bot._options_trader = options
-        options_thread = threading.Thread(target=options.start, daemon=True)
+
+        def _run_options_with_restart():
+            """Run options trader with auto-restart on crash."""
+            restarts = 0
+            while True:
+                try:
+                    options.start()
+                    break  # Clean exit (keyboard interrupt)
+                except Exception as e:
+                    restarts += 1
+                    logging.getLogger(__name__).error(
+                        f"Options thread crashed (restart #{restarts}): {e}",
+                        exc_info=True,
+                    )
+                    trader.notifier.send_system_alert(
+                        f"OPTIONS CRASHED (restart #{restarts}): {str(e)[:200]}"
+                    )
+                    if restarts >= 5:
+                        trader.notifier.send_system_alert(
+                            "OPTIONS: Too many crashes, giving up. Check logs."
+                        )
+                        break
+                    _time.sleep(30)  # Wait before restart
+
+        options_thread = threading.Thread(target=_run_options_with_restart, daemon=True)
         options_thread.start()
-        print("Options trader started (Alpaca)")
+        print("Options trader started (Alpaca) with auto-restart")
     else:
         print("Options: disabled (no ALPACA_API_KEY)")
 

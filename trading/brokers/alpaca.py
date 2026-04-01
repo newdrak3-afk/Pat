@@ -205,7 +205,7 @@ class AlpacaBroker(BaseBroker):
             # Collect contract symbols to fetch live quotes in batch
             contract_map = {}
             for c in contracts:
-                sym = c.get("symbol", "")
+                sym = c.get("symbol") or ""
                 if sym:
                     contract_map[sym] = c
 
@@ -218,20 +218,23 @@ class AlpacaBroker(BaseBroker):
                 quotes = self._get_option_quotes_batch(batch)
 
                 for sym in batch:
-                    c = contract_map[sym]
-                    q = quotes.get(sym, {})
-                    bid = float(q.get("bp", 0))
-                    ask = float(q.get("ap", 0))
+                    try:
+                        c = contract_map[sym]
+                        q = quotes.get(sym, {})
+                        bid = float(q.get("bp") or 0)
+                        ask = float(q.get("ap") or 0)
 
-                    options.append(OptionQuote(
-                        symbol=sym,
-                        strike=float(c.get("strike_price", 0)),
-                        expiration=c.get("expiration_date", ""),
-                        option_type=c.get("type", ""),
-                        open_interest=int(c.get("open_interest", 0)),
-                        bid=bid,
-                        ask=ask,
-                    ))
+                        options.append(OptionQuote(
+                            symbol=sym,
+                            strike=float(c.get("strike_price") or 0),
+                            expiration=c.get("expiration_date") or "",
+                            option_type=c.get("type") or "",
+                            open_interest=int(c.get("open_interest") or 0),
+                            bid=bid,
+                            ask=ask,
+                        ))
+                    except (TypeError, ValueError) as e:
+                        logger.debug(f"Skipping contract {sym}: {e}")
 
             logger.info(f"Options chain for {symbol}: {len(options)} contracts with quotes")
             return options
