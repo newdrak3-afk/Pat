@@ -126,6 +126,8 @@ class AlpacaBroker(BaseBroker):
 
         Timeframe mapping: H1 -> 1Hour, H4 -> 4Hour, D -> 1Day
         """
+        from datetime import datetime, timedelta, timezone
+
         tf_map = {
             "H1": "1Hour", "H4": "4Hour", "D": "1Day",
             "M15": "15Min", "M5": "5Min",
@@ -134,10 +136,21 @@ class AlpacaBroker(BaseBroker):
         }
         tf = tf_map.get(timeframe, timeframe)
 
+        # Calculate start date based on timeframe + count needed
+        # Alpaca returns only current-day bars without a start date
+        now = datetime.now(timezone.utc)
+        tf_to_days = {
+            "1Day": count * 2,      # Trading days ≈ count * 1.5, add buffer
+            "4Hour": count,          # ~4 bars/day → count/4 days + buffer
+            "1Hour": count // 6 + 5, # ~7 bars/day → count/7 days + buffer
+            "15Min": count // 20 + 3,
+            "5Min": count // 60 + 2,
+        }
+        lookback_days = tf_to_days.get(tf, count)
+        start = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%dT00:00:00Z")
+
         try:
-            # Paper accounts get SIP feed by default; don't restrict to IEX
-            # IEX doesn't support all timeframes and returns limited data
-            params = {"timeframe": tf, "limit": count}
+            params = {"timeframe": tf, "limit": count, "start": start}
 
             resp = requests.get(
                 f"{self.data_url}/v2/stocks/{symbol}/bars",
