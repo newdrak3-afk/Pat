@@ -92,6 +92,23 @@ class DrawdownGuard:
                 "equity_history": self.equity_history[-500:],
             }, f, indent=2)
 
+    def reset_peak(self, current_balance: float):
+        """
+        Reset peak equity to current balance.
+
+        Call this when starting fresh or when the old peak is stale
+        (e.g., practice account balance was reset).
+        """
+        self.peak_equity = current_balance
+        self.current_equity = current_balance
+        self.max_drawdown_seen = 0.0
+        self.max_drawdown_pct_seen = 0.0
+        self.daily_pnl = 0.0
+        self.daily_start_balance = current_balance
+        self.last_date = datetime.utcnow().strftime("%Y-%m-%d")
+        self._save_state()
+        logger.info(f"DRAWDOWN GUARD: Peak reset to ${current_balance:,.2f}")
+
     def update(self, current_balance: float):
         """
         Update with current account balance. Call after every trade.
@@ -110,6 +127,19 @@ class DrawdownGuard:
         # Track daily PnL
         if self.daily_start_balance > 0:
             self.daily_pnl = current_balance - self.daily_start_balance
+
+        # Auto-reset peak if it's wildly stale (>50% above current balance)
+        # This handles practice account resets and stale state files
+        if self.peak_equity > 0 and current_balance > 0:
+            stale_ratio = self.peak_equity / current_balance
+            if stale_ratio > 2.0:  # Peak is 2x+ current = clearly stale
+                logger.warning(
+                    f"DRAWDOWN GUARD: Peak ${self.peak_equity:,.2f} is {stale_ratio:.1f}x "
+                    f"current ${current_balance:,.2f} — auto-resetting peak"
+                )
+                self.peak_equity = current_balance
+                self.max_drawdown_seen = 0.0
+                self.max_drawdown_pct_seen = 0.0
 
         # Update peak and current
         self.current_equity = current_balance

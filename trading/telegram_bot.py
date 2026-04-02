@@ -412,10 +412,25 @@ class TelegramBot:
             self._send("Loss analyzer not available")
 
     def _cmd_drawdown(self, args):
-        if self._drawdown:
-            self._send(f"<pre>{self._drawdown.get_status()}</pre>")
-        else:
+        if not self._drawdown:
             self._send("Drawdown guard not initialized")
+            return
+
+        # /drawdown reset — reset peak to current balance
+        if args and args[0].lower() == "reset":
+            if self._oanda and self._oanda.connected:
+                balance = self._oanda.get_account_balance()
+                self._drawdown.reset_peak(balance)
+                self._send(
+                    f"<b>DRAWDOWN RESET</b>\n\n"
+                    f"Peak reset to current balance: ${balance:,.2f}\n"
+                    f"Drawdown tracking starts fresh from here."
+                )
+            else:
+                self._send("Cannot reset — OANDA not connected")
+            return
+
+        self._send(f"<pre>{self._drawdown.get_status()}</pre>")
 
     def _cmd_drift(self, args):
         if self._drift:
