@@ -58,9 +58,9 @@ class ContractSelector:
         self,
         min_dte: int = 10,
         max_dte: int = 21,
-        max_spread_pct: float = 0.10,
-        min_open_interest: int = 200,
-        min_volume: int = 10,
+        max_spread_pct: float = 0.15,
+        min_open_interest: int = 50,
+        min_volume: int = 5,
         max_premium: float = 500.0,
     ):
         self.min_dte = min_dte
@@ -90,10 +90,12 @@ class ContractSelector:
         now = datetime.now(timezone.utc).date()
 
         candidates = []
+        reject_counts = {"type": 0, "dte": 0, "oi": 0, "bid_ask": 0, "spread": 0, "premium": 0}
 
         for c in contracts:
             # Filter by type
             if c.option_type != option_type:
+                reject_counts["type"] += 1
                 continue
 
             # Filter by DTE
@@ -104,23 +106,28 @@ class ContractSelector:
 
             dte = (exp_date - now).days
             if dte < self.min_dte or dte > self.max_dte:
+                reject_counts["dte"] += 1
                 continue
 
             # Filter by open interest
             if c.open_interest < self.min_open_interest:
+                reject_counts["oi"] += 1
                 continue
 
             # Filter by spread
             if c.bid <= 0 or c.ask <= 0:
+                reject_counts["bid_ask"] += 1
                 continue
             mid = (c.bid + c.ask) / 2
             spread_pct = (c.ask - c.bid) / mid if mid > 0 else 1.0
             if spread_pct > self.max_spread_pct:
+                reject_counts["spread"] += 1
                 continue
 
             # Filter by premium (max loss = premium * 100 shares per contract)
             premium_cost = mid * 100
             if premium_cost > self.max_premium:
+                reject_counts["premium"] += 1
                 continue
 
             # Score by proximity to ATM (prefer near-the-money)
@@ -143,7 +150,15 @@ class ContractSelector:
             })
 
         if not candidates:
-            logger.info(f"No valid {option_type} contracts for {underlying}")
+            logger.info(
+                f"No valid {option_type} contracts for {underlying} | "
+                f"Total: {len(contracts)} | Filtered: "
+                f"type={reject_counts['type']} dte={reject_counts['dte']} "
+                f"oi={reject_counts['oi']} bid_ask={reject_counts['bid_ask']} "
+                f"spread={reject_counts['spread']} premium={reject_counts['premium']} | "
+                f"DTE range: {self.min_dte}-{self.max_dte} | "
+                f"Min OI: {self.min_open_interest} | Max spread: {self.max_spread_pct:.0%}"
+            )
             return None
 
         # Sort by score (closest to ATM with ITM preference)

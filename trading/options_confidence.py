@@ -98,9 +98,9 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # HARD GATES (instant reject)
     # ═══════════════════════════════════
 
-    # Gate 1: D1 trend must be directional
-    if x.d1_trend == "flat":
-        return OptionsConfidenceResult(0.0, x.mode, ["blocked: D1 flat — no directional trade"])
+    # Gate 1: D1 trend must be directional (soft gate — scanner already falls back to H4)
+    if x.d1_trend == "flat" and x.h4_trend == "flat":
+        return OptionsConfidenceResult(0.0, x.mode, ["blocked: D1+H4 both flat — no directional trade"])
 
     # Gate 2: Direction must match D1 trend
     expected = "buy" if x.d1_trend == "up" else "sell"
@@ -115,8 +115,8 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     if x.high_impact_today and x.mode == "momentum":
         return OptionsConfidenceResult(0.0, x.mode, ["blocked: high-impact event day (momentum)"])
 
-    # Gate 5: First/last 30 min — no momentum entries
-    if x.mode == "momentum" and (x.minutes_since_open < 30 or x.minutes_to_close < 30):
+    # Gate 5: First/last 15 min — no momentum entries (relaxed from 30 min)
+    if x.mode == "momentum" and (x.minutes_since_open < 15 or x.minutes_to_close < 15):
         return OptionsConfidenceResult(0.0, x.mode, ["blocked: too close to open/close for momentum"])
 
     # Gate 6: IV too high for buying premium
@@ -161,16 +161,14 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # ═══════════════════════════════════
     entry = 0.0
 
-    # Momentum trigger is critical for momentum mode
+    # Momentum trigger is important but not a death sentence
     if x.momentum_trigger:
         entry += 0.10
         reasons.append("entry: momentum trigger fired")
     elif x.mode == "momentum":
-        # No trigger in momentum mode = very weak
-        scores["entry"] = 0.0
-        scores["trend"] = scores.get("trend", 0)
-        total = sum(scores.values())
-        return OptionsConfidenceResult(total, x.mode, reasons + ["weak: no momentum trigger"], scores)
+        # No trigger in momentum mode = penalty, not instant death
+        entry += 0.02
+        reasons.append("entry: no momentum trigger (penalized)")
 
     # MACD histogram flip
     if x.macd_hist_flip:
@@ -328,5 +326,5 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
 
 # Thresholds — lowered for practice/paper mode so the bot actually trades.
 # In live mode, raise these back to 0.55 / 0.50 for tighter filtering.
-MOMENTUM_THRESHOLD = 0.40
-SWING_THRESHOLD = 0.35
+MOMENTUM_THRESHOLD = 0.25
+SWING_THRESHOLD = 0.20

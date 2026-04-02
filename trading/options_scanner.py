@@ -129,6 +129,11 @@ class OptionsScanner:
         candles_m15 = candles_m15_raw[:-1] if len(candles_m15_raw) > 1 else candles_m15_raw
 
         if len(candles_h1) < 50 or len(candles_h4) < 20 or len(candles_d1) < 20:
+            logger.info(
+                f"REJECT {symbol} {mode}: Insufficient bars — "
+                f"D1:{len(candles_d1)} H4:{len(candles_h4)} H1:{len(candles_h1)} "
+                f"(need D1:20 H4:20 H1:50)"
+            )
             return None
 
         # Extract arrays
@@ -157,12 +162,21 @@ class OptionsScanner:
 
         trend_bars_h4 = self._count_trend_bars(closes_h4, h4_trend)
 
-        # Direction from D1 trend
+        # Direction from D1 trend — if D1 is flat, fall back to H4 trend
         if d1_trend == "up":
             direction = "buy"
         elif d1_trend == "down":
             direction = "sell"
+        elif h4_trend == "up":
+            direction = "buy"
+            d1_trend = "up"  # Promote H4 trend so scoring doesn't gate on D1 flat
+            logger.info(f"{symbol} {mode}: D1 flat but H4 trending up — using H4 direction")
+        elif h4_trend == "down":
+            direction = "sell"
+            d1_trend = "down"
+            logger.info(f"{symbol} {mode}: D1 flat but H4 trending down — using H4 direction")
         else:
+            logger.info(f"REJECT {symbol} {mode}: Both D1 and H4 flat — no directional trade")
             return None
 
         # ─── INDICATORS ───
@@ -265,23 +279,26 @@ class OptionsScanner:
         # ─── GET QUOTE + CONTRACT ───
         quote = self.broker.get_quote(symbol)
         if not quote:
+            logger.info(f"REJECT {symbol} {mode}: No quote available")
             return None
 
         current_price = quote.mid
 
-        # Adjust contract selector for mode
+        # Adjust contract selector for mode — widened DTE ranges for practice
         if mode == "momentum":
-            self.contract_selector.min_dte = 5
-            self.contract_selector.max_dte = 10
+            self.contract_selector.min_dte = 3
+            self.contract_selector.max_dte = 14
         else:
-            self.contract_selector.min_dte = 10
-            self.contract_selector.max_dte = 21
+            self.contract_selector.min_dte = 7
+            self.contract_selector.max_dte = 30
 
         try:
             chain = self.broker.get_options_chain(symbol)
             if not chain:
+                logger.info(f"REJECT {symbol} {mode}: Options chain empty")
                 return None
-        except Exception:
+        except Exception as e:
+            logger.info(f"REJECT {symbol} {mode}: Options chain error: {e}")
             return None
 
         contract = self.contract_selector.select_contract(
@@ -291,6 +308,12 @@ class OptionsScanner:
             contracts=chain,
         )
         if not contract:
+            logger.info(
+                f"REJECT {symbol} {mode}: No valid contract — "
+                f"chain had {len(chain)} contracts, "
+                f"DTE range {self.contract_selector.min_dte}-{self.contract_selector.max_dte}, "
+                f"price=${current_price:.2f}"
+            )
             return None
 
         # ─── SCORE ───
@@ -387,11 +410,29 @@ class OptionsScanner:
             return "flat", 15.0
         sma20 = float(np.mean(closes[-20:]))
         sma10 = float(np.mean(closes[-10:]))
+        sma5 = float(np.mean(closes[-5:])) if len(closes) >= 5 else sma10
         adx = self._adx(highs, lows, closes)
-        if closes[-1] > sma20 and sma10 > sma20:
+        price = float(closes[-1])
+
+        # Strong trend: price AND SMA10 both above/below SMA20
+        if price > sma20 and sma10 > sma20:
             return "up", adx
-        elif closes[-1] < sma20 and sma10 < sma20:
+        elif price < sma20 and sma10 < sma20:
             return "down", adx
+
+        # Moderate trend: price above SMA10 and short-term momentum agrees
+        if price > sma10 and sma5 > sma10:
+            return "up", adx
+        elif price < sma10 and sma5 < sma10:
+            return "down", adx
+
+        # Weak trend: just use price vs SMA20 if ADX shows some strength
+        if adx >= 20:
+            if price > sma20:
+                return "up", adx
+            elif price < sma20:
+                return "down", adx
+
         return "flat", adx
 
     def _count_trend_bars(self, closes, trend) -> int:
