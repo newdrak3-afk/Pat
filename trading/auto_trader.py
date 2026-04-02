@@ -459,7 +459,14 @@ class AutoTrader:
             )
 
             if not approval.approved:
-                logger.info(f"BLOCKED: {signal['symbol']} — {approval.summary()}")
+                block_reason = approval.summary()
+                logger.info(f"BLOCKED: {signal['symbol']} — {block_reason}")
+                # Send block reason to Telegram so user can see WHY
+                self.notifier.send_system_alert(
+                    f"BLOCKED: {signal['symbol']} {signal['side'].upper()}\n"
+                    f"Confidence: {signal['confidence']:.0%}\n"
+                    f"{block_reason}"
+                )
                 trades_blocked += 1
                 self._stats["blocked_signals"] += 1
                 continue
@@ -494,6 +501,9 @@ class AutoTrader:
             # Skip if we already have an open position on this symbol
             if any(t["symbol"] == signal["symbol"] for t in self.position_mgr.open_trades.values()):
                 logger.info(f"SKIP: Already have open position on {signal['symbol']}")
+                self.notifier.send_system_alert(
+                    f"SKIP: {signal['symbol']} — already have open position"
+                )
                 trades_blocked += 1
                 continue
 
