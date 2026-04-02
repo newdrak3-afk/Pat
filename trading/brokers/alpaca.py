@@ -24,8 +24,17 @@ from trading.brokers.base import (
 
 logger = logging.getLogger(__name__)
 
-# Large-cap stocks to scan for options (narrow universe per ChatGPT)
-OPTIONS_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"]
+# Options universe — 25 high-liquidity symbols for scanning
+OPTIONS_SYMBOLS = [
+    # Tier 1: Index ETFs (highest liquidity, tightest spreads)
+    "SPY", "QQQ", "IWM", "DIA",
+    # Tier 2: Mega-cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA",
+    # Tier 3: High-volume large-caps
+    "AMD", "NFLX", "CRM", "COIN", "SQ", "UBER", "SHOP",
+    # Tier 4: Sector ETFs
+    "XLF", "XLE", "GDX", "SMH", "ARKK", "TLT", "EEM",
+]
 
 
 class AlpacaBroker(BaseBroker):

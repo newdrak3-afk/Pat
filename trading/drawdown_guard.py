@@ -42,8 +42,8 @@ class DrawdownGuard:
 
     def __init__(
         self,
-        max_drawdown_pct: float = 10.0,
-        daily_loss_limit_pct: float = 3.0,
+        max_drawdown_pct: float = 5.0,
+        daily_loss_limit_pct: float = 2.0,
         state_file: str = STATE_FILE,
     ):
         self.max_drawdown_pct = max_drawdown_pct

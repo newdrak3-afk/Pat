@@ -233,12 +233,52 @@ class GuardEngine:
                 pass
             approval.guard_results["theme_cap"] = True
 
-        # ── 10. Position sizing ──
+        # ── 10. Position sizing (dynamic based on recent performance) ──
         from trading.brokers.oanda import CRYPTO_PAIRS
-        risk_pct = 0.005  # 0.5% risk per trade (ChatGPT recommendation)
+        is_crypto = symbol in CRYPTO_PAIRS
+
+        # Base risk: 0.5% per trade
+        risk_pct = 0.005
+
+        # Dynamic adjustment: reduce risk after losing streaks
+        if self.db:
+            try:
+                recent = self.db.get_all_trades(limit=20)
+                if len(recent) >= 5:
+                    wins = sum(1 for t in recent if t.get("outcome") == "win")
+                    win_rate = wins / len(recent)
+
+                    # Check for consecutive losses
+                    consec_losses = 0
+                    for t in recent:
+                        if t.get("outcome") == "loss":
+                            consec_losses += 1
+                        else:
+                            break
+
+                    if consec_losses >= 5:
+                        risk_pct = 0.001  # 0.1% — heavy drawdown protection
+                        approval.reasons.append(f"Sizing: 5+ consec losses → 0.1% risk")
+                    elif consec_losses >= 3:
+                        risk_pct = 0.002  # 0.2%
+                        approval.reasons.append(f"Sizing: {consec_losses} consec losses → 0.2% risk")
+                    elif win_rate < 0.35:
+                        risk_pct = 0.002  # 0.2% — poor win rate
+                        approval.reasons.append(f"Sizing: {win_rate:.0%} win rate → 0.2% risk")
+                    elif win_rate < 0.45:
+                        risk_pct = 0.003  # 0.3%
+                    elif win_rate > 0.60:
+                        risk_pct = 0.006  # 0.6% — performing well, slight increase
+
+                    logger.info(
+                        f"DYNAMIC SIZING: win_rate={win_rate:.0%} "
+                        f"consec_losses={consec_losses} → risk={risk_pct:.1%}"
+                    )
+            except Exception as e:
+                logger.debug(f"Dynamic sizing check failed: {e}")
+
         risk_amount = balance * risk_pct
         sl_distance = abs(signal.get("entry", 0) - signal.get("stop_loss", 0))
-        is_crypto = symbol in CRYPTO_PAIRS
 
         if sl_distance > 0:
             units = int(risk_amount / sl_distance)

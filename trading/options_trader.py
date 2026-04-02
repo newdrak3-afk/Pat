@@ -52,7 +52,7 @@ class OptionsTrader:
 
         # Risk limits
         self.max_premium_per_trade = 500.0
-        self.max_open_positions = 3
+        self.max_open_positions = 5
 
         # Mode-specific exit rules
         self.exit_rules = {

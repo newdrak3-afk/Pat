@@ -318,7 +318,7 @@ class AutoTrader:
 
         # Connection already verified by _startup_checks()
         balance = self.oanda.get_account_balance()
-        self.scanner = ForexScanner(self.oanda)
+        self.scanner = ForexScanner(self.oanda, db=self.db)
 
         # Update bankroll from OANDA
         self.risk_mgr._bankroll = balance

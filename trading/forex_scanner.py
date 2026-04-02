@@ -62,12 +62,77 @@ class ForexScanner:
     - Structured confidence scoring (5 dimensions)
     - News sentiment filter (soft + hard blocks)
     - Bar-close discipline (drops forming candles)
+    - Lesson-based filtering (learns from past losses)
     """
 
-    def __init__(self, broker: OandaBroker):
+    def __init__(self, broker: OandaBroker, db=None):
         self.broker = broker
+        self.db = db
         self.news = NewsReader()
         self.confidence_threshold = CONFIDENCE_THRESHOLD_DEMO  # caller can override
+        self._lesson_rules = {}  # loaded from DB
+        self._lessons_loaded_at = None
+
+    def _load_lessons(self):
+        """Load lessons from DB and extract actionable rules."""
+        if not self.db:
+            return
+
+        try:
+            lessons = self.db.get_lessons(limit=100)
+            if not lessons:
+                return
+
+            # Count losses by category to build avoidance rules
+            category_counts = {}
+            blocked_symbols = set()
+            confidence_boost = 0.0
+
+            for lesson in lessons:
+                cat = lesson.get("category", "unknown")
+                category_counts[cat] = category_counts.get(cat, 0) + 1
+                rule = lesson.get("rule_added", "")
+
+                # Parse rules into actionable filters
+                if rule.startswith("block_symbol:"):
+                    blocked_symbols.add(rule.split(":")[1].strip())
+
+            # If we keep losing on the same category, raise the threshold
+            for cat, count in category_counts.items():
+                if count >= 3:
+                    confidence_boost += 0.05  # +5% per 3 losses in same category
+                elif count >= 2:
+                    confidence_boost += 0.02
+
+            self._lesson_rules = {
+                "blocked_symbols": blocked_symbols,
+                "confidence_boost": min(confidence_boost, 0.20),  # cap at +20%
+                "category_counts": category_counts,
+                "total_lessons": len(lessons),
+            }
+            self._lessons_loaded_at = datetime.now(timezone.utc)
+
+            if confidence_boost > 0:
+                logger.info(
+                    f"LESSONS LOADED: {len(lessons)} lessons, "
+                    f"confidence raised by +{confidence_boost:.0%} | "
+                    f"categories: {category_counts}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to load lessons: {e}")
+
+    def _get_recent_win_rate(self) -> float:
+        """Get win rate from last 20 trades for dynamic adjustments."""
+        if not self.db:
+            return 0.5
+        try:
+            trades = self.db.get_all_trades(limit=20)
+            if len(trades) < 5:
+                return 0.5  # Not enough data
+            wins = sum(1 for t in trades if t.get("outcome") == "win")
+            return wins / len(trades)
+        except Exception:
+            return 0.5
 
     def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
         """
@@ -101,10 +166,34 @@ class ForexScanner:
             logger.info("No pairs to scan")
             return []
 
+        # Load lessons every scan cycle so we learn in real-time
+        self._load_lessons()
+
+        # Dynamic threshold based on recent performance
+        win_rate = self._get_recent_win_rate()
+        if win_rate < 0.35:
+            # Losing streak — raise threshold to be more selective
+            self.confidence_threshold = min(0.65, CONFIDENCE_THRESHOLD_DEMO + 0.10)
+            logger.info(f"LEARNING: Win rate {win_rate:.0%} — raised threshold to {self.confidence_threshold:.2f}")
+        elif win_rate < 0.45:
+            self.confidence_threshold = min(0.60, CONFIDENCE_THRESHOLD_DEMO + 0.05)
+        else:
+            self.confidence_threshold = CONFIDENCE_THRESHOLD_DEMO
+
+        # Apply lesson-based confidence boost
+        lesson_boost = self._lesson_rules.get("confidence_boost", 0)
+        if lesson_boost > 0:
+            self.confidence_threshold = min(0.70, self.confidence_threshold + lesson_boost)
+            logger.info(f"LEARNING: Lessons raised threshold by +{lesson_boost:.0%} → {self.confidence_threshold:.2f}")
+
         signals = []
 
         skipped_reasons = {}
+        blocked_symbols = self._lesson_rules.get("blocked_symbols", set())
         for symbol in pairs:
+            if symbol in blocked_symbols:
+                skipped_reasons[symbol] = "blocked by lesson"
+                continue
             try:
                 signal = self._analyze_pair(symbol)
                 if signal:

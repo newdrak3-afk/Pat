@@ -33,10 +33,13 @@ from trading.news_sentiment import NewsReader
 
 logger = logging.getLogger(__name__)
 
-# Priority tiers — SPY/QQQ first, single names only when setup is strong
-TIER1_SYMBOLS = ["SPY", "QQQ"]
-TIER2_SYMBOLS = ["AAPL", "MSFT", "NVDA"]
-TIER2_CONFIDENCE_BONUS = 0.05  # Tier 2 needs slightly more confidence (was 0.10)
+# Priority tiers — Index ETFs first, then mega-cap, then the rest
+TIER1_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA"]
+TIER2_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA"]
+TIER3_SYMBOLS = ["AMD", "NFLX", "CRM", "COIN", "SQ", "UBER", "SHOP",
+                 "XLF", "XLE", "GDX", "SMH", "ARKK", "TLT", "EEM"]
+TIER2_CONFIDENCE_BONUS = 0.03  # Tier 2 needs slightly more confidence
+TIER3_CONFIDENCE_BONUS = 0.05  # Tier 3 needs a bit more
 
 # Market hours (UTC)
 MARKET_OPEN_UTC = 14 * 60 + 30   # 9:30 ET = 14:30 UTC
@@ -70,13 +73,14 @@ class OptionsScanner:
         self.news = NewsReader()
 
     def scan_all(self) -> list[dict]:
-        """Scan all symbols, return sorted signals."""
+        """Scan all symbols across all tiers, return sorted signals."""
         signals = []
         scan_log = []
+        total_symbols = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
 
-        logger.info(f"OPTIONS SCAN: scanning {len(TIER1_SYMBOLS)} T1 + {len(TIER2_SYMBOLS)} T2 symbols")
+        logger.info(f"OPTIONS SCAN: scanning {total_symbols} symbols ({len(TIER1_SYMBOLS)} T1 + {len(TIER2_SYMBOLS)} T2 + {len(TIER3_SYMBOLS)} T3)")
 
-        # Tier 1 first (SPY, QQQ)
+        # Tier 1: Index ETFs (SPY, QQQ, IWM, DIA)
         for symbol in TIER1_SYMBOLS:
             for mode in ["momentum", "swing"]:
                 try:
@@ -90,7 +94,7 @@ class OptionsScanner:
                     scan_log.append(f"  {symbol} {mode}: ERROR {e}")
                     logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
 
-        # Tier 2 only if setup quality is high
+        # Tier 2: Mega-cap tech
         for symbol in TIER2_SYMBOLS:
             for mode in ["momentum", "swing"]:
                 try:
@@ -104,8 +108,22 @@ class OptionsScanner:
                     scan_log.append(f"  {symbol} {mode}: ERROR {e}")
                     logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
 
+        # Tier 3: Other high-volume stocks + sector ETFs
+        for symbol in TIER3_SYMBOLS:
+            for mode in ["momentum", "swing"]:
+                try:
+                    signal = self._analyze_symbol(symbol, mode, tier=3)
+                    if signal:
+                        signals.append(signal)
+                        scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
+                    else:
+                        scan_log.append(f"  {symbol} {mode}: no setup")
+                except Exception as e:
+                    scan_log.append(f"  {symbol} {mode}: ERROR {e}")
+                    logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
+
         logger.info(f"OPTIONS SCAN RESULTS:\n" + "\n".join(scan_log))
-        logger.info(f"OPTIONS: {len(signals)} signals found from {len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS)} symbols")
+        logger.info(f"OPTIONS: {len(signals)} signals found from {total_symbols} symbols")
 
         signals.sort(key=lambda x: x["confidence"], reverse=True)
         return signals
@@ -352,6 +370,8 @@ class OptionsScanner:
         threshold = MOMENTUM_THRESHOLD if mode == "momentum" else SWING_THRESHOLD
         if tier == 2:
             threshold += TIER2_CONFIDENCE_BONUS
+        elif tier == 3:
+            threshold += TIER3_CONFIDENCE_BONUS
 
         if result.confidence < threshold:
             logger.info(
