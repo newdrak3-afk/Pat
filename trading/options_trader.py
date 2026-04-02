@@ -119,11 +119,17 @@ class OptionsTrader:
         balance = self.broker.get_account_balance()
         logger.info(f"Options trader v2 started — Balance: ${balance:,.2f}")
 
+        from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
+        total_syms = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
         self.notifier.send_system_alert(
             f"OPTIONS v2 online\n"
-            f"Modes: Momentum (5-10 DTE) + Swing (10-21 DTE)\n"
+            f"Scanning: {total_syms} symbols\n"
+            f"T1: {', '.join(TIER1_SYMBOLS)}\n"
+            f"T2: {', '.join(TIER2_SYMBOLS)}\n"
+            f"T3: {', '.join(TIER3_SYMBOLS)}\n"
+            f"Modes: Momentum (3-14 DTE) + Swing (7-30 DTE)\n"
             f"Alpaca balance: ${balance:,.2f}\n"
-            f"Focus: SPY, QQQ first | AAPL, MSFT, NVDA when ideal"
+            f"Max positions: {self.max_open_positions}"
         )
 
         cycle_count = 0
@@ -430,9 +436,16 @@ class OptionsTrader:
         total = self._stats["wins"] + self._stats["losses"]
         win_rate = (self._stats["wins"] / total * 100) if total > 0 else 0
 
+        try:
+            from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
+            total_syms = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
+        except Exception:
+            total_syms = 25
+
         lines = [
             "OPTIONS TRADER v2",
             "",
+            f"  Symbols:    {total_syms} (T1:{len(TIER1_SYMBOLS)} T2:{len(TIER2_SYMBOLS)} T3:{len(TIER3_SYMBOLS)})",
             f"  Modes:      Momentum + Swing",
             f"  Trades:     {self._stats['total_trades']}",
             f"  Momentum:   {self._stats.get('momentum_trades', 0)}",
