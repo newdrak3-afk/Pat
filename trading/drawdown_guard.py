@@ -169,6 +169,22 @@ class DrawdownGuard:
         if self.peak_equity <= 0:
             return True, "No equity data yet"
 
+        if self.current_equity <= 0:
+            return True, "No current equity data yet"
+
+        # Auto-fix stale peak: if peak is 2x+ current, it's from an old session
+        # (practice account reset, different account, etc.)
+        if self.peak_equity > self.current_equity * 2:
+            logger.warning(
+                f"DRAWDOWN: Stale peak ${self.peak_equity:,.0f} vs "
+                f"current ${self.current_equity:,.0f} — auto-resetting"
+            )
+            self.peak_equity = self.current_equity
+            self.max_drawdown_seen = 0.0
+            self.max_drawdown_pct_seen = 0.0
+            self._save_state()
+            return True, "Peak auto-reset (was stale)"
+
         # Check total drawdown
         drawdown = self.peak_equity - self.current_equity
         drawdown_pct = (drawdown / self.peak_equity) * 100
