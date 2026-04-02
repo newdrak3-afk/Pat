@@ -343,7 +343,8 @@ class AutoTrader:
         )
         self.telegram_bot.start()
 
-        self.notifier.send_startup(balance, dry_run=not self.settings.toggles.auto_trading_enabled)
+        is_practice = self.settings.toggles.demo_mode or self.settings.toggles.paper_trading
+        self.notifier.send_startup(balance, dry_run=is_practice)
         logger.info(f"Auto trader v3 started — Balance: ${balance:.2f}")
         logger.info(f"Scan interval: {scan_interval}s")
         logger.info(f"Profile: {self.settings.toggles.runtime_profile}")
@@ -487,24 +488,13 @@ class AutoTrader:
                 )
                 continue
 
-            # Idempotency: generate deterministic order ID from signal
-            # Prevents duplicate orders on restarts, retries, or API timeouts
+            # Position sizing
             units = approval.allowed_units
-            signal_key = f"{signal['symbol']}_{signal['side']}_{self._stats['cycles']}"
-            client_order_id = hashlib.sha256(signal_key.encode()).hexdigest()[:16]
 
-            # Check if we already placed this order
-            existing = self.db._execute(
-                "SELECT trade_id FROM trades WHERE trade_id = ?",
-                (client_order_id,), fetch="one", commit=False,
-            )
-            if existing:
-                logger.info(f"SKIP DUPLICATE: {signal['symbol']} already placed (id={client_order_id})")
-                continue
-
-            # Also skip if we already have an open position on this symbol
+            # Skip if we already have an open position on this symbol
             if any(t["symbol"] == signal["symbol"] for t in self.position_mgr.open_trades.values()):
                 logger.info(f"SKIP: Already have open position on {signal['symbol']}")
+                trades_blocked += 1
                 continue
 
             # Execute the trade

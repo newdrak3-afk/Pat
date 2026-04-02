@@ -179,13 +179,13 @@ class TelegramNotifier:
         predictions: int,
         trades: int,
         blocked: int,
+        label: str = "FOREX",
     ):
         """Send summary after each scan cycle."""
         msg = (
-            f"<b>SCAN COMPLETE</b>\n"
+            f"<b>{label} SCAN</b>\n"
             f"\n"
             f"Markets scanned: {total_markets}\n"
-            f"Flagged: {flagged}\n"
             f"Signals found: {predictions}\n"
             f"Trades placed: {trades}\n"
             f"Trades blocked: {blocked}"
