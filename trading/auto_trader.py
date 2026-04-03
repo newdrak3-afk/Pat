@@ -492,11 +492,15 @@ class AutoTrader:
             # Position sizing
             units = approval.allowed_units
 
-            # Skip if we already have an open position on this symbol
-            if any(t["symbol"] == signal["symbol"] for t in self.position_mgr.open_trades.values()):
-                logger.info(f"SKIP: Already have open position on {signal['symbol']}")
+            # Allow up to 2 positions per symbol; block 3rd+
+            same_symbol_count = sum(
+                1 for t in self.position_mgr.open_trades.values()
+                if t["symbol"] == signal["symbol"]
+            )
+            if same_symbol_count >= 2:
+                logger.info(f"SKIP: Already have {same_symbol_count} positions on {signal['symbol']}")
                 self.notifier.send_system_alert(
-                    f"SKIP: {signal['symbol']} — already have open position"
+                    f"SKIP: {signal['symbol']} — already have {same_symbol_count} open positions (max 2)"
                 )
                 trades_blocked += 1
                 continue
