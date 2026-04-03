@@ -581,51 +581,57 @@ class AutoTrader:
 
     def get_status(self) -> str:
         """Get current auto trader status with config snapshot."""
-        total = self._stats["wins"] + self._stats["losses"]
-        win_rate = (self._stats["wins"] / total * 100) if total > 0 else 0
         balance = self.oanda.get_account_balance() if self.oanda.connected else 0
         session = get_current_session()
         t = self.settings.toggles
 
+        # Pull stats from DB for accuracy (survives redeploys)
+        db_summary = self.db.get_performance_summary() or {}
+        db_total = db_summary.get("total_trades", 0) or self._stats["total_trades"]
+        db_wins = db_summary.get("wins", 0) or self._stats["wins"]
+        db_losses = db_summary.get("losses", 0) or self._stats["losses"]
+        db_pnl = db_summary.get("total_pnl", 0) or self._stats["total_pnl"]
+        total = db_wins + db_losses
+        win_rate = (db_wins / total * 100) if total > 0 else 0
+
+        # Get open positions from broker
+        open_positions = []
+        try:
+            open_positions = self.oanda.get_positions() or []
+        except Exception:
+            pass
+
         lines = [
-            "╔══════════════════════════════════════╗",
-            "║     AUTO TRADER v3 STATUS            ║",
-            "╚══════════════════════════════════════╝",
+            "══ TRADING BOT STATUS ══",
             "",
-            f"  Version:       {self._get_git_sha()}",
-            f"  Profile:       {t.runtime_profile}",
-            f"  Account:       {'PRACTICE' if t.demo_mode else 'LIVE'}",
-            f"  Risk/Trade:    0.5%",
-            f"  Max Positions: {'unlimited (demo)' if t.demo_mode else '3'}",
-            f"  Max Trades/Cy: {'10 (demo)' if t.demo_mode else str(t.max_trades_per_cycle)}",
-            f"  Bar-Close:     ON",
-            f"  Idempotency:   ON",
-            "",
-            f"  Session:       {session.primary.replace('_', ' ').title()}",
-            f"  Liquidity:     {session.liquidity.upper()}",
             f"  Balance:       ${balance:,.2f}",
-            f"  Cycles:        {self._stats['cycles']}",
-            f"  Total Trades:  {self._stats['total_trades']}",
-            f"  Wins/Losses:   {self._stats['wins']}/{self._stats['losses']}",
+            f"  Open Trades:   {len(open_positions)}",
+            f"  Total Trades:  {db_total}",
+            f"  Wins:          {db_wins}",
+            f"  Losses:        {db_losses}",
             f"  Win Rate:      {win_rate:.0f}%",
-            f"  Total PnL:     ${self._stats['total_pnl']:+,.2f}",
-            f"  Open Trades:   {self.position_mgr.open_count}",
+            f"  Total PnL:     ${db_pnl:+,.2f}",
+            f"  Cycles:        {self._stats['cycles']}",
             f"  Blocked:       {self._stats.get('blocked_signals', 0)}",
             "",
         ]
 
-        # Add drawdown status
-        lines.append(self.drawdown.get_status())
-        lines.append("")
+        # Show open positions
+        if open_positions:
+            lines.append("  OPEN POSITIONS:")
+            for p in open_positions:
+                pair = p.symbol.replace("_", "/")
+                side = "Long" if p.quantity > 0 else "Short"
+                lines.append(
+                    f"    {pair} {side} {abs(p.quantity)} units "
+                    f"@ {p.entry_price:.5f} PnL: ${p.pnl:+,.2f}"
+                )
+            lines.append("")
 
-        # Add drift status
-        lines.append(self.drift.get_status())
-        lines.append("")
-
-        # Add portfolio exposure
-        exposure = self.portfolio.get_exposure_report()
-        lines.append(f"  Portfolio Positions: {exposure.get('total_positions', 0)}")
-        lines.append(f"  Total Exposure: {exposure.get('total_exposure_pct', 0):.1f}%")
+        lines.append(f"  Session:       {session.primary.replace('_', ' ').title()}")
+        lines.append(f"  Profile:       {t.runtime_profile}")
+        lines.append(f"  Scanning:      {'ON' if t.scanning_enabled else 'OFF'}")
+        lines.append(f"  Auto-Trading:  {'ON' if t.auto_trading_enabled else 'OFF'}")
 
         return "\n".join(lines)
 

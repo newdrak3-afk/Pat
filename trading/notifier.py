@@ -316,13 +316,15 @@ class TelegramNotifier:
         direction = "BUY (Long)" if side == "buy" else "SELL (Short)"
         pnl_sign = "+" if pnl >= 0 else ""
 
+        conf_str = f"{confidence:.0%}" if confidence > 0 else "synced trade"
+
         msg = (
             f"<b>{'🟢' if outcome == 'WIN' else '🔴'} {outcome} {pnl_sign}${pnl:.2f}</b>\n"
             f"\n"
             f"<b>{pair}</b> — {direction}\n"
             f"Entry: {entry:.5f}\n"
             f"Units: {units:,.0f}\n"
-            f"Confidence: {confidence:.0%}\n"
+            f"Confidence: {conf_str}\n"
             f"\n"
             f"P&L: <b>{pnl_sign}${pnl:.2f}</b>\n"
             f"Balance: <b>${balance:,.2f}</b>"

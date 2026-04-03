@@ -1125,68 +1125,69 @@ class TelegramBot:
         """Build and send the heartbeat status message."""
         lines = ["<b>HEARTBEAT</b>\n"]
 
-        # Brokers up/down
+        # ── FOREX ──
+        lines.append("<b>━━ FOREX (OANDA) ━━</b>")
+        balance = 0
         if self._oanda:
             oanda_ok = getattr(self._oanda, "connected", False)
-            lines.append(f"OANDA: {'UP' if oanda_ok else 'DOWN'}")
-        else:
-            lines.append("OANDA: not configured")
+            lines.append(f"Status: {'UP' if oanda_ok else 'DOWN'}")
+            if oanda_ok:
+                try:
+                    balance = self._oanda.get_account_balance()
+                    lines.append(f"Balance: ${balance:,.2f}")
+                except Exception:
+                    pass
 
-        if self._options_trader:
-            opt_ok = getattr(self._options_trader.broker, "connected", False)
-            opt_trades = self._options_trader._stats.get("total_trades", 0)
-            opt_cycles = self._options_trader._stats.get("cycles", 0)
-            opt_open = len(self._options_trader.open_trades)
-            lines.append(f"Options: {'UP' if opt_ok else 'DOWN'} | "
-                        f"{opt_trades} trades | {opt_open} open | {opt_cycles} cycles")
+                # Open positions with details
+                try:
+                    positions = self._oanda.get_positions() or []
+                    total_pnl = sum(getattr(p, "pnl", 0) for p in positions)
+                    lines.append(f"Open: {len(positions)} positions (PnL: ${total_pnl:+,.2f})")
+                    for p in positions[:5]:
+                        pair = p.symbol.replace("_", "/")
+                        side = "L" if p.quantity > 0 else "S"
+                        lines.append(f"  {pair} {side} {abs(p.quantity)} @ {p.entry_price:.5f} ${p.pnl:+,.2f}")
+                except Exception:
+                    lines.append("Open: unknown")
 
-        # Last scan time
-        if self._last_scan_time:
-            lines.append(f"Last scan: {self._last_scan_time.strftime('%H:%M:%S')}")
-        else:
-            lines.append("Last scan: none")
-
-        # Open positions and PnL
-        total_pnl = 0.0
-        pos_count = 0
-        if self._oanda and getattr(self._oanda, "connected", False):
+        # DB stats (survives redeploys)
+        if self._db:
             try:
-                positions = self._oanda.get_positions()
-                pos_count = len(positions) if positions else 0
-                total_pnl = sum(getattr(p, "pnl", 0) for p in (positions or []))
+                summary = self._db.get_performance_summary() or {}
+                db_wins = summary.get("wins", 0)
+                db_losses = summary.get("losses", 0)
+                db_total = db_wins + db_losses
+                db_pnl = summary.get("total_pnl", 0)
+                win_rate = (db_wins / db_total * 100) if db_total > 0 else 0
+                lines.append(f"All-time: {db_total} trades | W:{db_wins} L:{db_losses} ({win_rate:.0f}%)")
+                lines.append(f"Total PnL: ${db_pnl:+,.2f}")
             except Exception:
                 pass
-        lines.append(f"Open positions: {pos_count}")
-        lines.append(f"PnL: ${total_pnl:+,.2f}")
 
-        # Drawdown %
-        if self._drawdown:
-            try:
-                dd_pct = getattr(self._drawdown, "current_drawdown_pct", None)
-                if dd_pct is not None:
-                    lines.append(f"Drawdown: {dd_pct:.1f}%")
-                else:
-                    can, reason = self._drawdown.can_trade()
-                    lines.append(f"Drawdown: {'OK' if can else reason}")
-            except Exception:
-                lines.append("Drawdown: unavailable")
-
-        # Guard states
+        # ── OPTIONS ──
         lines.append("")
-        lines.append("<b>Guards:</b>")
+        lines.append("<b>━━ OPTIONS (ALPACA) ━━</b>")
+        if self._options_trader:
+            opt_ok = getattr(self._options_trader.broker, "connected", False)
+            opt_stats = self._options_trader._stats
+            lines.append(f"Status: {'UP' if opt_ok else 'DOWN'}")
+            lines.append(f"Cycles: {opt_stats.get('cycles', 0)}")
+            lines.append(f"Trades: {opt_stats.get('total_trades', 0)} | "
+                        f"W:{opt_stats.get('wins', 0)} L:{opt_stats.get('losses', 0)}")
+            lines.append(f"PnL: ${opt_stats.get('total_pnl', 0):+,.2f}")
+            lines.append(f"Open: {len(self._options_trader.open_trades)}/{self._options_trader.max_open_positions}")
+        else:
+            lines.append("Not active")
+
+        # ── GUARDS ──
+        lines.append("")
+        lines.append("<b>━━ GUARDS ━━</b>")
         if self._drawdown:
-            can, _ = self._drawdown.can_trade()
-            lines.append(f"  Drawdown: {'OK' if can else 'BLOCKED'}")
+            can, reason = self._drawdown.can_trade()
+            lines.append(f"Drawdown: {'OK' if can else 'BLOCKED — ' + reason[:50]}")
         if self._drift:
             drifting, _ = self._drift.is_drifting()
-            lines.append(f"  Drift: {'DRIFTING' if drifting else 'OK'}")
-        if self._calibration:
-            overconf = self._calibration.is_overconfident()
-            lines.append(f"  Calibration: {'OVERCONFIDENT' if overconf else 'OK'}")
-        if self._portfolio:
-            report = self._portfolio.get_exposure_report()
-            lines.append(f"  Portfolio: {report.get('total_positions', 0)} pos, "
-                        f"{report.get('total_exposure_pct', 0):.0f}% exposed")
+            lines.append(f"Drift: {'DRIFTING' if drifting else 'OK'}")
 
         lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self._send("\n".join(lines))
