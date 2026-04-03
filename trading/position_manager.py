@@ -249,7 +249,9 @@ class PositionManager:
                 lesson_text = lesson.description
 
                 if self.db:
+                    from uuid import uuid4
                     self.db.save_lesson(
+                        lesson_id=str(uuid4())[:8],
                         trade_id=trade_id,
                         category=lesson.category,
                         description=lesson.description,

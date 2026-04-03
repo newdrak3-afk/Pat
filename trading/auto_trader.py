@@ -585,51 +585,70 @@ class AutoTrader:
         session = get_current_session()
         t = self.settings.toggles
 
-        # Pull stats from DB for accuracy (survives redeploys)
+        # Combine DB + in-memory stats (use whichever is higher since DB resets on deploy)
         db_summary = self.db.get_performance_summary() or {}
-        db_total = db_summary.get("total_trades", 0) or self._stats["total_trades"]
-        db_wins = db_summary.get("wins", 0) or self._stats["wins"]
-        db_losses = db_summary.get("losses", 0) or self._stats["losses"]
-        db_pnl = db_summary.get("total_pnl", 0) or self._stats["total_pnl"]
-        total = db_wins + db_losses
-        win_rate = (db_wins / total * 100) if total > 0 else 0
+        db_wins = db_summary.get("wins", 0) or 0
+        db_losses = db_summary.get("losses", 0) or 0
+        mem_wins = self._stats["wins"]
+        mem_losses = self._stats["losses"]
+        # Use the higher count (DB might be from older session, memory from this session)
+        total_wins = max(db_wins, mem_wins)
+        total_losses = max(db_losses, mem_losses)
+        total_closed = total_wins + total_losses
+        win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0
+        total_pnl = self._stats["total_pnl"] or db_summary.get("total_pnl", 0) or 0
 
-        # Get open positions from broker
+        # Get open positions from broker (ground truth)
         open_positions = []
         try:
             open_positions = self.oanda.get_positions() or []
         except Exception:
             pass
+        open_pnl = sum(getattr(p, "pnl", 0) for p in open_positions)
+
+        total_trades = total_closed + len(open_positions)
 
         lines = [
             "══ TRADING BOT STATUS ══",
             "",
             f"  Balance:       ${balance:,.2f}",
-            f"  Open Trades:   {len(open_positions)}",
-            f"  Total Trades:  {db_total}",
-            f"  Wins:          {db_wins}",
-            f"  Losses:        {db_losses}",
+            "",
+            f"  ── TRADES ──",
+            f"  Open:          {len(open_positions)}",
+            f"  Wins:          {total_wins}",
+            f"  Losses:        {total_losses}",
+            f"  Total:         {total_trades}",
             f"  Win Rate:      {win_rate:.0f}%",
-            f"  Total PnL:     ${db_pnl:+,.2f}",
-            f"  Cycles:        {self._stats['cycles']}",
-            f"  Blocked:       {self._stats.get('blocked_signals', 0)}",
+            f"  Closed PnL:    ${total_pnl:+,.2f}",
+            f"  Open PnL:      ${open_pnl:+,.2f}",
             "",
         ]
 
         # Show open positions
         if open_positions:
-            lines.append("  OPEN POSITIONS:")
+            lines.append("  ── OPEN POSITIONS ──")
             for p in open_positions:
                 pair = p.symbol.replace("_", "/")
                 side = "Long" if p.quantity > 0 else "Short"
                 lines.append(
-                    f"    {pair} {side} {abs(p.quantity)} units "
-                    f"@ {p.entry_price:.5f} PnL: ${p.pnl:+,.2f}"
+                    f"    {pair} {side} {abs(p.quantity)}"
+                    f" @ {p.entry_price:.5f}"
+                    f" PnL: ${p.pnl:+,.2f}"
                 )
             lines.append("")
 
+        # Lessons learned
+        try:
+            lessons = self.db.get_lessons(limit=100)
+            lesson_count = len(lessons) if lessons else 0
+            lines.append(f"  Lessons:       {lesson_count}")
+        except Exception:
+            pass
+
+        lines.append(f"  Cycles:        {self._stats['cycles']}")
+        lines.append(f"  Blocked:       {self._stats.get('blocked_signals', 0)}")
+        lines.append("")
         lines.append(f"  Session:       {session.primary.replace('_', ' ').title()}")
-        lines.append(f"  Profile:       {t.runtime_profile}")
         lines.append(f"  Scanning:      {'ON' if t.scanning_enabled else 'OFF'}")
         lines.append(f"  Auto-Trading:  {'ON' if t.auto_trading_enabled else 'OFF'}")
 
@@ -639,21 +658,18 @@ class AutoTrader:
         """Get comprehensive report including DB stats."""
         lines = [self.get_status(), ""]
 
-        # DB performance summary
+        # Lessons learned this session
         try:
-            summary = self.db.get_performance_summary() or {}
-            total = summary.get("total_trades") or 0
-            win_rate = summary.get("win_rate") or 0
-            total_pnl = summary.get("total_pnl") or 0
-            lines.extend([
-                "  ── Database Stats ──",
-                f"  DB Trades:     {total}",
-                f"  DB Win Rate:   {win_rate:.0%}",
-                f"  DB Total PnL:  ${total_pnl:+,.2f}",
-                "",
-            ])
+            lessons = self.db.get_lessons(limit=100)
+            if lessons:
+                lines.append("  ── LESSONS LEARNED ──")
+                for l in lessons[:5]:
+                    lines.append(f"  [{l.get('category', '?')}] {l.get('description', '')[:80]}")
+                if len(lessons) > 5:
+                    lines.append(f"  ... and {len(lessons) - 5} more")
+                lines.append("")
         except Exception:
-            lines.append("  DB Stats: No data yet\n")
+            pass
 
         # Calibration stats
         try:
