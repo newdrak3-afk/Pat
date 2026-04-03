@@ -490,10 +490,18 @@ class AutoTrader:
                     sl=signal["stop_loss"], tp=signal["take_profit"],
                     taken=False, reason_skipped="Auto-trading disabled (alert only)",
                 )
+                trades_blocked += 1
                 continue
 
             # Position sizing
             units = approval.allowed_units
+            if units <= 0:
+                logger.info(f"SKIP: {signal['symbol']} — position size is 0 units")
+                self.notifier.send_system_alert(
+                    f"SKIP: {signal['symbol']} — guard approved but units=0 (insufficient balance?)"
+                )
+                trades_blocked += 1
+                continue
 
             # Allow up to 2 positions per symbol; block 3rd+
             same_symbol_count = sum(
@@ -567,6 +575,11 @@ class AutoTrader:
                 )
             else:
                 logger.warning(f"Order failed for {signal['symbol']}: {result.message}")
+                self.notifier.send_system_alert(
+                    f"ORDER REJECTED: {signal['symbol']} {signal['side'].upper()}\n"
+                    f"{result.message[:200]}"
+                )
+                trades_blocked += 1
 
         # Summary
         from trading.brokers.oanda import ALL_PAIRS
