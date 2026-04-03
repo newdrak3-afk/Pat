@@ -156,7 +156,8 @@ class AlpacaBroker(BaseBroker):
         """
         Get historical bars for a stock.
 
-        Timeframe mapping: H1 -> 1Hour, H4 -> 4Hour, D -> 1Day
+        Alpaca supports: 1Min, 5Min, 15Min, 30Min, 1Hour, 1Day, 1Week, 1Month
+        4Hour is NOT supported — we synthesize it from 1Hour bars.
         """
         from datetime import datetime, timedelta, timezone
 
@@ -168,12 +169,15 @@ class AlpacaBroker(BaseBroker):
         }
         tf = tf_map.get(timeframe, timeframe)
 
+        # 4Hour is NOT a native Alpaca timeframe — synthesize from 1Hour
+        if tf == "4Hour":
+            h1_bars = self.get_candles(symbol, "1Hour", count * 4 + 4)
+            return self._aggregate_bars(h1_bars, 4)[:count]
+
         # Calculate start date based on timeframe + count needed
-        # Alpaca returns only current-day bars without a start date
         now = datetime.now(timezone.utc)
         tf_to_days = {
             "1Day": count * 2,      # Trading days ≈ count * 1.5, add buffer
-            "4Hour": count,          # ~4 bars/day → count/4 days + buffer
             "1Hour": count // 6 + 5, # ~7 bars/day → count/7 days + buffer
             "15Min": count // 20 + 3,
             "5Min": count // 60 + 2,
@@ -184,7 +188,7 @@ class AlpacaBroker(BaseBroker):
         try:
             params = {
                 "timeframe": tf,
-                "limit": count,
+                "limit": min(count * 4 if tf == "1Hour" else count, 10000),
                 "start": start,
                 "feed": "iex",  # Free tier: use IEX feed (SIP requires paid subscription)
                 "adjustment": "split",
@@ -216,6 +220,26 @@ class AlpacaBroker(BaseBroker):
         except requests.RequestException as e:
             logger.warning(f"Candles error for {symbol} {tf}: {e}")
         return []
+
+    @staticmethod
+    def _aggregate_bars(bars: list[dict], period: int) -> list[dict]:
+        """Aggregate smaller bars into larger ones (e.g. 1H → 4H)."""
+        if not bars:
+            return []
+        result = []
+        for i in range(0, len(bars) - period + 1, period):
+            chunk = bars[i:i + period]
+            if not chunk:
+                continue
+            result.append({
+                "open": chunk[0]["open"],
+                "high": max(b["high"] for b in chunk),
+                "low": min(b["low"] for b in chunk),
+                "close": chunk[-1]["close"],
+                "volume": sum(b.get("volume", 0) for b in chunk),
+                "time": chunk[0].get("time", ""),
+            })
+        return result
 
     def get_options_chain(
         self,
