@@ -190,18 +190,12 @@ class OptionsTrader:
         logger.info(f"OPTIONS: Scan returned {len(signals)} signals")
         if not signals:
             logger.info("OPTIONS: No signals this cycle — all symbols rejected by filters")
-            # Every 6th cycle, send debug info to Telegram
-            if self._stats["cycles"] % 6 == 1:
-                from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
-                total = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
-                self.notifier.send_system_alert(
-                    f"OPTIONS: 0 signals from {total} symbols\n"
-                    f"Check /testoptions for diagnostics\n"
-                    f"All rejections logged — common causes:\n"
-                    f"- D1+H4 both flat\n"
-                    f"- Insufficient bar data\n"
-                    f"- No valid contracts"
-                )
+            from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
+            total = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
+            self.notifier.send_system_alert(
+                f"OPTIONS CYCLE #{self._stats['cycles']}: 0 signals from {total} symbols\n"
+                f"Scanned {total} × 2 modes = {total*2} checks"
+            )
             return
 
         for signal in signals[:3]:

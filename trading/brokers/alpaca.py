@@ -279,9 +279,9 @@ class AlpacaBroker(BaseBroker):
             if resp.ok:
                 return resp.json().get("quotes", {})
             else:
-                logger.debug(f"Batch option quotes failed: {resp.status_code}")
+                logger.warning(f"Batch option quotes failed: {resp.status_code} — {resp.text[:200]}")
         except requests.RequestException as e:
-            logger.debug(f"Batch option quotes error: {e}")
+            logger.warning(f"Batch option quotes error: {e}")
         return {}
 
     def get_option_quote(self, option_symbol: str) -> Optional[OptionQuote]:

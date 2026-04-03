@@ -38,25 +38,48 @@ TIER1_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA"]
 TIER2_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "TSLA"]
 TIER3_SYMBOLS = ["AMD", "NFLX", "CRM", "COIN", "SQ", "UBER", "SHOP",
                  "XLF", "XLE", "GDX", "SMH", "ARKK", "TLT", "EEM"]
-TIER2_CONFIDENCE_BONUS = 0.03  # Tier 2 needs slightly more confidence
-TIER3_CONFIDENCE_BONUS = 0.05  # Tier 3 needs a bit more
+TIER2_CONFIDENCE_BONUS = -0.02  # Tier 2: slightly easier threshold (more liquid)
+TIER3_CONFIDENCE_BONUS = -0.03  # Tier 3: easier threshold (higher vol = bigger moves)
 
-# Market hours (UTC)
-MARKET_OPEN_UTC = 14 * 60 + 30   # 9:30 ET = 14:30 UTC
-MARKET_CLOSE_UTC = 21 * 60       # 16:00 ET = 21:00 UTC
+# Market hours in Eastern Time (handles DST automatically)
+MARKET_OPEN_ET_HOUR = 9
+MARKET_OPEN_ET_MIN = 30
+MARKET_CLOSE_ET_HOUR = 16
+MARKET_CLOSE_ET_MIN = 0
+
+# Kept for backward compat in minutes_since_open calc (approximate, refreshed each cycle)
+MARKET_OPEN_UTC = 13 * 60 + 30  # ~9:30 EDT in UTC (summer)
+MARKET_CLOSE_UTC = 20 * 60      # ~16:00 EDT in UTC (summer)
+
+
+def _get_et_now() -> datetime:
+    """Get current time in US Eastern (handles EDT/EST automatically)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except ImportError:
+        # Fallback: assume EDT (UTC-4) April-November
+        from datetime import timedelta
+        utc_now = datetime.now(timezone.utc)
+        return utc_now.replace(tzinfo=None) - timedelta(hours=4)
 
 
 def is_options_market_open(now: datetime = None) -> bool:
     """Check if US options market is in tradeable hours."""
-    if now is None:
-        now = datetime.now(timezone.utc)
+    et_now = _get_et_now()
 
-    if now.weekday() >= 5:  # Weekend
+    if et_now.weekday() >= 5:  # Weekend
         return False
 
-    minutes = now.hour * 60 + now.minute
-    # Avoid first 15 min and last 15 min
-    return (MARKET_OPEN_UTC + 15) <= minutes <= (MARKET_CLOSE_UTC - 15)
+    et_minutes = et_now.hour * 60 + et_now.minute
+    market_open = MARKET_OPEN_ET_HOUR * 60 + MARKET_OPEN_ET_MIN  # 9:30 = 570
+    market_close = MARKET_CLOSE_ET_HOUR * 60 + MARKET_CLOSE_ET_MIN  # 16:00 = 960
+
+    # Tradeable: 9:45 to 15:45 ET (skip first/last 15 min)
+    is_open = (market_open + 15) <= et_minutes <= (market_close - 15)
+    if not is_open:
+        logger.debug(f"Options market check: ET={et_now.strftime('%H:%M')} open={is_open}")
+    return is_open
 
 
 class OptionsScanner:
@@ -180,7 +203,7 @@ class OptionsScanner:
 
         trend_bars_h4 = self._count_trend_bars(closes_h4, h4_trend)
 
-        # Direction from D1 trend — if D1 is flat, fall back to H4 trend
+        # Direction from D1 trend — fall back to H4, then H1
         if d1_trend == "up":
             direction = "buy"
         elif d1_trend == "down":
@@ -193,9 +216,21 @@ class OptionsScanner:
             direction = "sell"
             d1_trend = "down"
             logger.info(f"{symbol} {mode}: D1 flat but H4 trending down — using H4 direction")
+        elif h1_trend in ("up", "down"):
+            # Both D1 and H4 flat — use H1 with reduced confidence (scoring handles penalty)
+            direction = "buy" if h1_trend == "up" else "sell"
+            d1_trend = h1_trend
+            logger.info(f"{symbol} {mode}: D1+H4 flat, using H1 trend={h1_trend}")
         else:
-            logger.info(f"REJECT {symbol} {mode}: Both D1 and H4 flat — no directional trade")
-            return None
+            # All flat — pick direction from recent momentum (last 5 H1 candles)
+            recent_change = closes_h1[-1] - closes_h1[-5] if len(closes_h1) >= 5 else 0
+            if abs(recent_change) > 0:
+                direction = "buy" if recent_change > 0 else "sell"
+                d1_trend = "up" if recent_change > 0 else "down"
+                logger.info(f"{symbol} {mode}: All TFs flat — using H1 momentum direction={direction}")
+            else:
+                logger.info(f"REJECT {symbol} {mode}: All TFs flat with no momentum")
+                return None
 
         # ─── INDICATORS ───
         rsi_h1 = self._rsi(closes_h1)

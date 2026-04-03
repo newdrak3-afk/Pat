@@ -98,13 +98,11 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # HARD GATES (instant reject)
     # ═══════════════════════════════════
 
-    # Gate 1: D1 trend must be directional (soft gate — scanner already falls back to H4)
-    if x.d1_trend == "flat" and x.h4_trend == "flat":
-        return OptionsConfidenceResult(0.0, x.mode, ["blocked: D1+H4 both flat — no directional trade"])
+    # Gate 1: removed — scanner now promotes H4/H1 trend to d1_trend before calling scorer
 
-    # Gate 2: Direction must match D1 trend
+    # Gate 2: Direction must match D1 trend (but scanner already aligns these)
     expected = "buy" if x.d1_trend == "up" else "sell"
-    if x.direction != expected:
+    if x.d1_trend not in ("flat",) and x.direction != expected:
         return OptionsConfidenceResult(0.0, x.mode, ["blocked: countertrend"])
 
     # Gate 3: Earnings block for single names (not SPY/QQQ)

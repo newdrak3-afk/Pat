@@ -58,9 +58,9 @@ class ContractSelector:
         self,
         min_dte: int = 10,
         max_dte: int = 21,
-        max_spread_pct: float = 0.15,
-        min_open_interest: int = 50,
-        min_volume: int = 5,
+        max_spread_pct: float = 0.25,
+        min_open_interest: int = 10,
+        min_volume: int = 1,
         max_premium: float = 500.0,
     ):
         self.min_dte = min_dte
