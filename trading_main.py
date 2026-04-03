@@ -228,8 +228,9 @@ def cmd_auto(orch: Orchestrator):
         import time as _time
 
         options = OptionsTrader(orch.config)
-        # Wire options trader into telegram bot
+        # Wire options trader into telegram bot AND auto trader for /status
         trader.telegram_bot._options_trader = options
+        trader.options_trader = options
 
         def _run_options_with_restart():
             """Run options trader with auto-restart on crash."""

@@ -140,18 +140,13 @@ class OptionsTrader:
                     logger.info(f"OPTIONS CYCLE #{cycle_count} starting...")
                     self._run_cycle()
 
-                    status_msg = (
-                        f"OPTIONS CYCLE #{cycle_count}\n"
-                        f"Open: {len(self.open_trades)}/{self.max_open_positions}\n"
-                        f"Total trades: {self._stats['total_trades']}\n"
-                        f"W/L: {self._stats['wins']}/{self._stats['losses']}\n"
+                    logger.info(
+                        f"OPTIONS CYCLE #{cycle_count} — "
+                        f"Open: {len(self.open_trades)}/{self.max_open_positions} | "
+                        f"Total: {self._stats['total_trades']} | "
+                        f"W/L: {self._stats['wins']}/{self._stats['losses']} | "
                         f"PnL: ${self._stats['total_pnl']:+,.2f}"
                     )
-                    logger.info(status_msg)
-
-                    # Send scan summary to Telegram every 6 cycles (~30min at 5min interval)
-                    if cycle_count % 6 == 1:
-                        self.notifier.send_system_alert(f"OPTIONS SCAN\n{status_msg}")
                 else:
                     if cycle_count == 0:
                         # First cycle and market closed — notify once
@@ -186,24 +181,39 @@ class OptionsTrader:
 
         # Scan for new signals
         logger.info("OPTIONS: Starting scan...")
+        from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
+        total_symbols = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
+
         signals = self.scanner.scan_all()
         logger.info(f"OPTIONS: Scan returned {len(signals)} signals")
+
+        trades_placed = 0
+        trades_blocked = 0
+
         if not signals:
-            logger.info("OPTIONS: No signals this cycle — all symbols rejected by filters")
-            from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
-            total = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
-            self.notifier.send_system_alert(
-                f"OPTIONS CYCLE #{self._stats['cycles']}: 0 signals from {total} symbols\n"
-                f"Scanned {total} × 2 modes = {total*2} checks"
+            # Send scan summary even with 0 signals
+            self.notifier.send_options_scan(
+                symbols_scanned=total_symbols,
+                signals_found=0,
+                trades_placed=0,
+                trades_blocked=0,
             )
             return
 
         for signal in signals[:3]:
             if len(self.open_trades) >= self.max_open_positions:
-                break
+                trades_blocked += 1
+                self.notifier.send_system_alert(
+                    f"OPTIONS BLOCKED: {signal['symbol']} — max positions ({self.max_open_positions}) reached"
+                )
+                continue
 
             # Skip if already have position in this underlying
             if any(t["symbol"] == signal["symbol"] for t in self.open_trades.values()):
+                trades_blocked += 1
+                self.notifier.send_system_alert(
+                    f"OPTIONS BLOCKED: {signal['symbol']} — already have position"
+                )
                 continue
 
             contract = signal["contract"]
@@ -212,6 +222,10 @@ class OptionsTrader:
                 logger.info(
                     f"SKIP {signal['symbol']}: Premium ${contract.max_loss:.0f} "
                     f"> max ${self.max_premium_per_trade}"
+                )
+                trades_blocked += 1
+                self.notifier.send_system_alert(
+                    f"OPTIONS BLOCKED: {signal['symbol']} — premium ${contract.max_loss:.0f} > max ${self.max_premium_per_trade:.0f}"
                 )
                 continue
 
@@ -224,7 +238,13 @@ class OptionsTrader:
                 limit_price=contract.mid,
             )
 
+            if not result:
+                logger.error(f"Option order returned None for {signal['symbol']}")
+                trades_blocked += 1
+                continue
+
             if result.success:
+                trades_placed += 1
                 mode = signal.get("mode", "swing")
                 trade_info = {
                     "trade_id": result.order_id,
@@ -290,6 +310,13 @@ class OptionsTrader:
                     f"${contract.strike} exp {contract.expiration} @ ${contract.mid:.2f}"
                 )
 
+        # Send OPTIONS SCAN summary (mirrors forex scan format)
+        self.notifier.send_options_scan(
+            symbols_scanned=total_symbols,
+            signals_found=len(signals),
+            trades_placed=trades_placed,
+            trades_blocked=trades_blocked,
+        )
         self._save_state()
 
     def _check_positions(self):

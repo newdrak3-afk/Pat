@@ -192,6 +192,24 @@ class TelegramNotifier:
         )
         self._send(msg)
 
+    def send_options_scan(
+        self,
+        symbols_scanned: int,
+        signals_found: int,
+        trades_placed: int,
+        trades_blocked: int,
+    ):
+        """Send summary after each options scan cycle."""
+        msg = (
+            f"<b>OPTIONS SCAN</b>\n"
+            f"\n"
+            f"Symbols scanned: {symbols_scanned}\n"
+            f"Signals found: {signals_found}\n"
+            f"Trades placed: {trades_placed}\n"
+            f"Trades blocked: {trades_blocked}"
+        )
+        self._send(msg)
+
     # ─── DAILY SUMMARY ───
 
     def send_daily_summary(

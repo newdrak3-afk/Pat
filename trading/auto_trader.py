@@ -95,6 +95,9 @@ class AutoTrader:
             db=self.db,
         )
 
+        # Options trader (wired externally by trading_main.py)
+        self.options_trader = None
+
         # v3: Position manager
         self.position_mgr = PositionManager(
             oanda=self.oanda,
@@ -655,9 +658,25 @@ class AutoTrader:
         except Exception:
             pass
 
-        lines.append(f"  Cycles:        {self._stats['cycles']}")
+        lines.append(f"  Forex Cycles:  {self._stats['cycles']}")
         lines.append(f"  Blocked:       {self._stats.get('blocked_signals', 0)}")
         lines.append("")
+
+        # ── OPTIONS SECTION ──
+        if self.options_trader:
+            opt = self.options_trader
+            opt_stats = opt._stats
+            lines.extend([
+                "  ── OPTIONS (ALPACA) ──",
+                f"  Open:          {len(opt.open_trades)}/{opt.max_open_positions}",
+                f"  Trades:        {opt_stats.get('total_trades', 0)}",
+                f"  Wins:          {opt_stats.get('wins', 0)}",
+                f"  Losses:        {opt_stats.get('losses', 0)}",
+                f"  PnL:           ${opt_stats.get('total_pnl', 0):+,.2f}",
+                f"  Cycles:        {opt_stats.get('cycles', 0)}",
+                "",
+            ])
+
         lines.append(f"  Session:       {session.primary.replace('_', ' ').title()}")
         lines.append(f"  Scanning:      {'ON' if t.scanning_enabled else 'OFF'}")
         lines.append(f"  Auto-Trading:  {'ON' if t.auto_trading_enabled else 'OFF'}")
