@@ -169,11 +169,11 @@ class OptionsScanner:
         candles_h1 = candles_h1_raw[:-1] if len(candles_h1_raw) > 1 else candles_h1_raw
         candles_m15 = candles_m15_raw[:-1] if len(candles_m15_raw) > 1 else candles_m15_raw
 
-        if len(candles_h1) < 50 or len(candles_h4) < 20 or len(candles_d1) < 20:
+        if len(candles_h1) < 10 or len(candles_d1) < 5:
             logger.info(
                 f"REJECT {symbol} {mode}: Insufficient bars — "
                 f"D1:{len(candles_d1)} H4:{len(candles_h4)} H1:{len(candles_h1)} "
-                f"(need D1:20 H4:20 H1:50)"
+                f"(need D1:5 H1:10)"
             )
             return None
 

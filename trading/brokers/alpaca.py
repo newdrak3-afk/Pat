@@ -108,25 +108,48 @@ class AlpacaBroker(BaseBroker):
         return 0.0
 
     def get_quote(self, symbol: str) -> Optional[Quote]:
-        """Get latest quote for a stock."""
+        """Get latest quote for a stock. Falls back to trade price if quote incomplete."""
         try:
+            # Try quote first
             resp = requests.get(
                 f"{self.data_url}/v2/stocks/{symbol}/quotes/latest",
                 headers=self._headers,
+                params={"feed": "iex"},
                 timeout=10,
             )
+            bid, ask = 0.0, 0.0
             if resp.ok:
                 data = resp.json().get("quote", {})
                 bid = float(data.get("bp", 0))
                 ask = float(data.get("ap", 0))
+
+            # If quote is incomplete (free tier often has 0 ask), fall back to last trade
+            if bid <= 0 or ask <= 0:
+                trade_resp = requests.get(
+                    f"{self.data_url}/v2/stocks/{symbol}/trades/latest",
+                    headers=self._headers,
+                    params={"feed": "iex"},
+                    timeout=10,
+                )
+                if trade_resp.ok:
+                    trade_data = trade_resp.json().get("trade", {})
+                    trade_price = float(trade_data.get("p", 0))
+                    if trade_price > 0:
+                        # Synthetic bid/ask from trade price with small spread
+                        spread_est = trade_price * 0.001  # ~0.1% spread estimate
+                        bid = bid if bid > 0 else trade_price - spread_est
+                        ask = ask if ask > 0 else trade_price + spread_est
+                        logger.debug(f"Quote fallback for {symbol}: trade={trade_price:.2f}")
+
+            if bid > 0 or ask > 0:
                 return Quote(
                     symbol=symbol,
                     bid=bid,
                     ask=ask,
-                    spread=ask - bid,
+                    spread=ask - bid if ask > bid else 0,
                 )
         except requests.RequestException as e:
-            logger.debug(f"Quote error for {symbol}: {e}")
+            logger.warning(f"Quote error for {symbol}: {e}")
         return None
 
     def get_candles(self, symbol: str, timeframe: str = "1Hour", count: int = 100) -> list[dict]:
@@ -159,7 +182,13 @@ class AlpacaBroker(BaseBroker):
         start = (now - timedelta(days=lookback_days)).strftime("%Y-%m-%dT00:00:00Z")
 
         try:
-            params = {"timeframe": tf, "limit": count, "start": start}
+            params = {
+                "timeframe": tf,
+                "limit": count,
+                "start": start,
+                "feed": "iex",  # Free tier: use IEX feed (SIP requires paid subscription)
+                "adjustment": "split",
+            }
 
             resp = requests.get(
                 f"{self.data_url}/v2/stocks/{symbol}/bars",
