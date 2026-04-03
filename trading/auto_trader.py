@@ -514,6 +514,12 @@ class AutoTrader:
                 take_profit_pips=signal["tp_pips"],
             )
 
+            if not result:
+                logger.error(f"Order placement returned None for {signal['symbol']}")
+                self.notifier.send_system_alert(f"ORDER FAILED: {signal['symbol']} — no response from broker")
+                trades_blocked += 1
+                continue
+
             if result.success:
                 trade_info = {
                     "trade_id": result.order_id,

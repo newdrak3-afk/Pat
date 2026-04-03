@@ -209,7 +209,7 @@ class ForexScanner:
         if not self.db:
             return 0.5
         try:
-            trades = self.db.get_all_trades(limit=20)
+            trades = self.db.get_all_trades(limit=20) or []
             if len(trades) < 5:
                 return 0.5  # Not enough data
             wins = sum(1 for t in trades if t.get("outcome") == "win")
@@ -288,14 +288,14 @@ class ForexScanner:
                 continue
 
             # Check spread limit from lessons (spread_slippage rule)
-            if max_spread_limit and self.oanda:
+            if max_spread_limit and self.broker:
                 try:
-                    quote = self.oanda.get_quote(symbol)
+                    quote = self.broker.get_quote(symbol)
                     if quote and quote.spread and quote.spread > max_spread_limit:
                         skipped_reasons[symbol] = f"spread {quote.spread:.1f} > lesson limit {max_spread_limit:.1f}"
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not check spread for {symbol}: {e}")
             try:
                 signal = self._analyze_pair(symbol)
                 if signal:

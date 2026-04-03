@@ -224,8 +224,7 @@ class GuardEngine:
                         theme_count += 1
                 if theme_count >= 2:
                     approval.approved = False
-                    overlap = symbol_currencies & set()
-                    approval.reasons.append(f"Theme cap: {theme_count} positions share currency")
+                    approval.reasons.append(f"Theme cap: {theme_count} positions share {'/'.join(symbol_currencies)}")
                     approval.guard_results["theme_cap"] = False
                     self._log_verdict(signal, approved=False, reason="Same-theme exposure cap")
                     return approval
@@ -243,7 +242,7 @@ class GuardEngine:
         # Dynamic adjustment: reduce risk after losing streaks
         if self.db:
             try:
-                recent = self.db.get_all_trades(limit=20)
+                recent = self.db.get_all_trades(limit=20) or []
                 if len(recent) >= 5:
                     wins = sum(1 for t in recent if t.get("outcome") == "win")
                     win_rate = wins / len(recent)
