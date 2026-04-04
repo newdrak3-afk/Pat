@@ -53,6 +53,8 @@ class OptionsTrader:
         # Risk limits
         self.max_premium_per_trade = 500.0
         self.max_open_positions = 5
+        self.auto_trading_enabled = True  # Toggle via Telegram
+        self.scanning_enabled = True      # Toggle via Telegram
 
         # Mode-specific exit rules
         self.exit_rules = {
@@ -135,7 +137,7 @@ class OptionsTrader:
         cycle_count = 0
         while True:
             try:
-                if is_options_market_open():
+                if is_options_market_open() and self.scanning_enabled:
                     cycle_count += 1
                     logger.info(f"OPTIONS CYCLE #{cycle_count} starting...")
                     self._run_cycle()
@@ -197,6 +199,19 @@ class OptionsTrader:
                 signals_found=0,
                 trades_placed=0,
                 trades_blocked=0,
+            )
+            return
+
+        if not self.auto_trading_enabled:
+            self.notifier.send_system_alert(
+                f"OPTIONS: {len(signals)} signals found but auto-trading is OFF\n"
+                f"Send /optiontrade on to enable"
+            )
+            self.notifier.send_options_scan(
+                symbols_scanned=total_symbols,
+                signals_found=len(signals),
+                trades_placed=0,
+                trades_blocked=len(signals),
             )
             return
 

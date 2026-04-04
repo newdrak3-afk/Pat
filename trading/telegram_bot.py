@@ -234,40 +234,39 @@ class TelegramBot:
             "<b>━━━ FOREX (OANDA) ━━━</b>\n"
             "/balance — OANDA balance\n"
             "/positions — Open forex positions\n"
-            "/scan — Toggle forex scanning ON/OFF\n"
-            "/trade — Toggle forex auto-trading ON/OFF\n"
+            "/scan [on|off] — Toggle forex scanning\n"
+            "/trade [on|off] — Toggle forex auto-trading\n"
             "/crypto — Scan crypto NOW\n"
             "/history — Recent trade history\n"
             "/why — Why last signal was blocked\n\n"
 
             "<b>━━━ OPTIONS (ALPACA) ━━━</b>\n"
             "/options — Options trader status\n"
-            "/optionscan — Force options scan now\n"
-            "/optiontrade — Options trading stats\n"
-            "/optionpositions — Open options + live P&L\n"
-            "/optionrisk — View/adjust risk settings\n"
+            "/optionscan — Force scan now\n"
+            "/optionscan [on|off] — Toggle scanning\n"
+            "/optiontrade — Options stats\n"
+            "/optiontrade [on|off] — Toggle auto-trading\n"
+            "/optionpositions — Open options + P&L\n"
+            "/optionrisk — View/adjust risk\n"
             "/testoptions — Test Alpaca connection\n\n"
 
             "<b>━━━ SYSTEM ━━━</b>\n"
-            "/status — Full bot status\n"
+            "/status — Full bot status (forex + options)\n"
             "/report — Performance report\n"
             "/lessons — Lessons from losses\n"
-            "/session — Trading session info\n"
             "/settings — All current settings\n"
-            "/mode [paper|practice|live] — Switch profile\n"
-            "/set key value — Change a setting\n"
             "/heartbeat — Toggle heartbeat ON/OFF\n\n"
 
             "<b>━━━ RISK / GUARDS ━━━</b>\n"
             "/guards — All guard statuses\n"
             "/drawdown — Drawdown guard status\n"
-            "/drawdown reset — Reset peak to current balance\n"
+            "/drawdown reset — Reset peak\n"
             "/drift — Drift detector\n"
             "/exposure — Portfolio exposure\n\n"
 
             "<b>━━━ CONTROLS ━━━</b>\n"
-            "/pause — Pause ALL trading\n"
-            "/resume — Resume ALL trading\n"
+            "/pause — Pause ALL (forex + options)\n"
+            "/resume — Resume ALL (forex + options)\n"
             "/kill — EMERGENCY stop\n"
             "/safe — Close all + stop trading"
         )
@@ -465,27 +464,29 @@ class TelegramBot:
         if self._settings:
             self._settings.set("scanning_enabled", False)
             self._settings.set("auto_trading_enabled", False)
-            self._send(
-                "<b>PAUSED</b>\n\n"
-                "Scanning: OFF\n"
-                "Auto-Trading: OFF\n\n"
-                "Send /resume to restart."
-            )
-        else:
-            self._send("Settings not available")
+        if self._options_trader:
+            self._options_trader.scanning_enabled = False
+            self._options_trader.auto_trading_enabled = False
+        self._send(
+            "<b>PAUSED</b>\n\n"
+            "FOREX — Scanning: OFF | Trading: OFF\n"
+            "OPTIONS — Scanning: OFF | Trading: OFF\n\n"
+            "Send /resume to restart everything."
+        )
 
     def _cmd_resume(self, args):
         if self._settings:
             self._settings.set("scanning_enabled", True)
             self._settings.set("auto_trading_enabled", True)
-            self._send(
-                "<b>RESUMED</b>\n\n"
-                "Scanning: ON\n"
-                "Auto-Trading: ON\n\n"
-                "Bot is now scanning and trading."
-            )
-        else:
-            self._send("Settings not available")
+        if self._options_trader:
+            self._options_trader.scanning_enabled = True
+            self._options_trader.auto_trading_enabled = True
+        self._send(
+            "<b>RESUMED</b>\n\n"
+            "FOREX — Scanning: ON | Trading: ON\n"
+            "OPTIONS — Scanning: ON | Trading: ON\n\n"
+            "Bot is now scanning and trading."
+        )
 
     def _cmd_guards(self, args):
         lines = ["<b>GUARD STATUS</b>\n"]
@@ -782,9 +783,19 @@ class TelegramBot:
         self._send("\n".join(lines))
 
     def _cmd_optionscan(self, args):
-        """Force an options scan or show last scan results."""
+        """Toggle options scanning or force a scan now."""
         if not self._options_trader:
             self._send("Options trader not active. Set ALPACA_API_KEY to enable.")
+            return
+
+        # Handle on/off toggle
+        if args and args[0].lower() in ("on", "true", "1"):
+            self._options_trader.scanning_enabled = True
+            self._send("Options Scanning: <b>ON</b>")
+            return
+        elif args and args[0].lower() in ("off", "false", "0"):
+            self._options_trader.scanning_enabled = False
+            self._send("Options Scanning: <b>OFF</b>")
             return
 
         broker = self._options_trader.broker
@@ -858,9 +869,13 @@ class TelegramBot:
             total = stats["wins"] + stats["losses"]
             win_rate = (stats["wins"] / total * 100) if total > 0 else 0
             open_count = len(self._options_trader.open_trades)
+            scan_state = "ON" if self._options_trader.scanning_enabled else "OFF"
+            trade_state = "ON" if self._options_trader.auto_trading_enabled else "OFF"
 
             self._send(
                 f"<b>OPTIONS TRADING</b>\n\n"
+                f"Scanning: <b>{scan_state}</b>\n"
+                f"Auto-Trading: <b>{trade_state}</b>\n\n"
                 f"Total trades: {stats['total_trades']}\n"
                 f"Momentum: {stats.get('momentum_trades', 0)} | "
                 f"Swing: {stats.get('swing_trades', 0)}\n"
@@ -870,23 +885,26 @@ class TelegramBot:
                 f"Open: {open_count}/{self._options_trader.max_open_positions}\n"
                 f"Cycles: {stats.get('cycles', 0)}\n\n"
                 f"Max premium: ${self._options_trader.max_premium_per_trade:.0f}\n"
-                f"Max positions: {self._options_trader.max_open_positions}"
+                f"Max positions: {self._options_trader.max_open_positions}\n\n"
+                f"/optiontrade on — Enable auto-trading\n"
+                f"/optiontrade off — Disable auto-trading"
             )
             return
 
         action = args[0].lower()
         if action in ("on", "true", "1", "enable"):
+            self._options_trader.auto_trading_enabled = True
             self._send(
-                "<b>OPTIONS TRADING: ON</b>\n\n"
-                "Options auto-trading is controlled by the options thread.\n"
-                "It scans every 5 minutes during market hours.\n"
-                "Use /optionscan to force a scan now."
+                "<b>OPTIONS AUTO-TRADING: ON</b>\n\n"
+                "Bot will now place real options trades on Alpaca.\n"
+                "Scans every 5 min during market hours (9:45-3:45 ET)."
             )
         elif action in ("off", "false", "0", "disable"):
+            self._options_trader.auto_trading_enabled = False
             self._send(
-                "<b>OPTIONS TRADING</b>\n\n"
-                "Options run on a separate thread and can't be paused individually yet.\n"
-                "Use /kill to stop ALL trading, or /safe to close all positions."
+                "<b>OPTIONS AUTO-TRADING: OFF</b>\n\n"
+                "Scanning continues but no trades will be placed.\n"
+                "Send /optiontrade on to re-enable."
             )
         else:
             self._send("Usage: /optiontrade [on|off]")
