@@ -248,13 +248,103 @@ class AlpacaBroker(BaseBroker):
         option_type: str = None,
     ) -> list[OptionQuote]:
         """
-        Get options chain for a stock with live quotes.
+        Get options chain for a stock.
 
-        Args:
-            symbol: Underlying stock symbol (e.g. "SPY")
-            expiration_date: Filter by expiry (YYYY-MM-DD)
-            option_type: "call" or "put"
+        Strategy (per ChatGPT diagnosis):
+        1. Try snapshots endpoint first (/v1beta1/options/snapshots) — has greeks + quotes
+        2. Fall back to contracts endpoint (/v2/options/contracts) + batch quotes
+        3. If quotes unavailable, use close_price from contracts as synthetic quote
         """
+        # ─── METHOD 1: Snapshots endpoint (best data, may require paid plan) ───
+        options = self._get_chain_via_snapshots(symbol)
+        if options:
+            logger.info(f"Options chain for {symbol}: {len(options)} contracts via snapshots")
+            return options
+
+        # ─── METHOD 2: Contracts endpoint + batch quotes ───
+        options = self._get_chain_via_contracts(symbol, expiration_date, option_type)
+        if options:
+            logger.info(f"Options chain for {symbol}: {len(options)} contracts via contracts+quotes")
+            return options
+
+        logger.warning(f"Options chain EMPTY for {symbol} — both methods failed")
+        return []
+
+    def _get_chain_via_snapshots(self, symbol: str) -> list[OptionQuote]:
+        """Try the snapshots endpoint for full chain data with greeks."""
+        try:
+            resp = requests.get(
+                f"{self.data_url}/v1beta1/options/snapshots/{symbol}",
+                headers=self._headers,
+                params={"feed": "indicative", "limit": 100},
+                timeout=15,
+            )
+            if not resp.ok:
+                logger.debug(f"Snapshots endpoint failed for {symbol}: {resp.status_code}")
+                return []
+
+            snapshots = resp.json().get("snapshots", {})
+            if not snapshots:
+                logger.debug(f"Snapshots empty for {symbol}")
+                return []
+
+            options = []
+            for sym, snap in snapshots.items():
+                try:
+                    quote = snap.get("latestQuote", {})
+                    trade = snap.get("latestTrade", {})
+                    greeks = snap.get("greeks", {})
+
+                    bid = float(quote.get("bp", 0) or 0)
+                    ask = float(quote.get("ap", 0) or 0)
+
+                    # Fall back to last trade if quote is incomplete
+                    if bid <= 0 and ask <= 0:
+                        trade_price = float(trade.get("p", 0) or 0)
+                        if trade_price > 0:
+                            bid = trade_price * 0.95
+                            ask = trade_price * 1.05
+
+                    # Parse option symbol to extract strike/expiry/type
+                    # Alpaca option symbols: SPY250411C00550000
+                    strike, expiry, opt_type, oi = 0.0, "", "", 0
+                    if len(sym) > 6:
+                        try:
+                            # Extract from symbol pattern
+                            root_end = next(i for i, c in enumerate(sym) if c.isdigit())
+                            date_str = sym[root_end:root_end+6]
+                            opt_type_char = sym[root_end+6]
+                            strike_str = sym[root_end+7:]
+                            expiry = f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
+                            opt_type = "call" if opt_type_char == "C" else "put"
+                            strike = float(strike_str) / 1000
+                        except (StopIteration, ValueError, IndexError):
+                            pass
+
+                    oi = int(snap.get("openInterest", 0) or 0)
+
+                    if strike > 0 and (bid > 0 or ask > 0):
+                        options.append(OptionQuote(
+                            symbol=sym,
+                            strike=strike,
+                            expiration=expiry,
+                            option_type=opt_type,
+                            open_interest=oi,
+                            bid=bid,
+                            ask=ask,
+                        ))
+                except Exception as e:
+                    logger.debug(f"Snapshot parse error {sym}: {e}")
+
+            return options
+        except requests.RequestException as e:
+            logger.debug(f"Snapshots request error for {symbol}: {e}")
+        return []
+
+    def _get_chain_via_contracts(
+        self, symbol: str, expiration_date: str = None, option_type: str = None
+    ) -> list[OptionQuote]:
+        """Fetch contracts from trading API, then try to get quotes."""
         try:
             params = {"underlying_symbols": symbol, "limit": 100, "status": "active"}
             if expiration_date:
@@ -269,53 +359,66 @@ class AlpacaBroker(BaseBroker):
                 timeout=10,
             )
             if not resp.ok:
-                logger.warning(f"Options chain request failed for {symbol}: {resp.status_code} {resp.text[:200]}")
+                logger.warning(f"Contracts endpoint failed for {symbol}: {resp.status_code} {resp.text[:200]}")
                 return []
 
             contracts = resp.json().get("option_contracts", [])
             if not contracts:
-                logger.info(f"No option contracts returned for {symbol}")
+                logger.info(f"No contracts returned for {symbol}")
                 return []
 
-            # Collect contract symbols to fetch live quotes in batch
+            logger.info(f"Found {len(contracts)} contracts for {symbol}, fetching quotes...")
+
+            # Build contract map
             contract_map = {}
             for c in contracts:
                 sym = c.get("symbol") or ""
                 if sym:
                     contract_map[sym] = c
 
-            # Fetch live quotes for all contracts (batch up to 100)
-            options = []
+            # Try batch quotes
             symbols_list = list(contract_map.keys())
-
+            all_quotes = {}
             for batch_start in range(0, len(symbols_list), 50):
                 batch = symbols_list[batch_start:batch_start + 50]
                 quotes = self._get_option_quotes_batch(batch)
+                all_quotes.update(quotes)
 
-                for sym in batch:
-                    try:
-                        c = contract_map[sym]
-                        q = quotes.get(sym, {})
-                        bid = float(q.get("bp") or 0)
-                        ask = float(q.get("ap") or 0)
+            quotes_found = sum(1 for q in all_quotes.values() if q)
+            logger.info(f"Got quotes for {quotes_found}/{len(symbols_list)} contracts")
 
-                        options.append(OptionQuote(
-                            symbol=sym,
-                            strike=float(c.get("strike_price") or 0),
-                            expiration=c.get("expiration_date") or "",
-                            option_type=c.get("type") or "",
-                            open_interest=int(c.get("open_interest") or 0),
-                            bid=bid,
-                            ask=ask,
-                        ))
-                    except (TypeError, ValueError) as e:
-                        logger.debug(f"Skipping contract {sym}: {e}")
+            # Build option list — use quotes if available, otherwise use close_price
+            options = []
+            for sym, c in contract_map.items():
+                try:
+                    q = all_quotes.get(sym, {})
+                    bid = float(q.get("bp") or 0) if q else 0
+                    ask = float(q.get("ap") or 0) if q else 0
 
-            logger.info(f"Options chain for {symbol}: {len(options)} contracts with quotes")
+                    # If no quotes, use close_price from contract as synthetic price
+                    if bid <= 0 and ask <= 0:
+                        close_price = float(c.get("close_price") or 0)
+                        if close_price > 0:
+                            bid = close_price * 0.90  # Conservative synthetic spread
+                            ask = close_price * 1.10
+                            logger.debug(f"Synthetic quote for {sym}: close={close_price:.2f}")
+
+                    options.append(OptionQuote(
+                        symbol=sym,
+                        strike=float(c.get("strike_price") or 0),
+                        expiration=c.get("expiration_date") or "",
+                        option_type=c.get("type") or "",
+                        open_interest=int(c.get("open_interest") or 0),
+                        bid=bid,
+                        ask=ask,
+                    ))
+                except (TypeError, ValueError) as e:
+                    logger.debug(f"Skipping contract {sym}: {e}")
+
             return options
 
         except requests.RequestException as e:
-            logger.warning(f"Options chain error for {symbol}: {e}")
+            logger.warning(f"Contracts request error for {symbol}: {e}")
         return []
 
     def _get_option_quotes_batch(self, symbols: list[str]) -> dict:

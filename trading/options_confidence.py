@@ -220,7 +220,8 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # ═══════════════════════════════════
     # DIMENSION 4: Contract Quality (0..0.15)
     # ═══════════════════════════════════
-    contract = 0.0
+    # Start with neutral baseline (0.05) so missing data doesn't kill the score
+    contract = 0.05
 
     # IV rank (lower = cheaper premium = better for buying)
     if x.iv_rank <= 30:
@@ -260,7 +261,8 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # ═══════════════════════════════════
     # DIMENSION 5: Event/News (0..0.10)
     # ═══════════════════════════════════
-    event = 0.0
+    # Start with neutral baseline (0.03) — no news is not bad news
+    event = 0.03
 
     if x.news_aligned:
         event += 0.05
@@ -279,7 +281,8 @@ def score_options_setup(x: OptionsConfidenceInputs) -> OptionsConfidenceResult:
     # ═══════════════════════════════════
     # DIMENSION 6: Execution Quality (0..0.10)
     # ═══════════════════════════════════
-    execution = 0.0
+    # Start with neutral baseline (0.03) so market hours don't zero out
+    execution = 0.03
 
     # Best trading hours: 10:00-11:30, 13:30-15:30 ET
     if 30 <= x.minutes_since_open <= 120:  # 10:00-11:30
