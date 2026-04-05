@@ -217,7 +217,14 @@ class ForexScanner:
         except Exception:
             return 0.5
 
-    def scan_all_pairs(self, include_crypto: bool = True) -> list[dict]:
+    # Currency codes that must NEVER be keyword-blocked (too broad for FX)
+    _CURRENCY_CODES = {
+        "usd", "eur", "gbp", "jpy", "aud", "nzd", "cad", "chf",
+        "hkd", "sgd", "sek", "nok", "dkk", "zar", "try", "mxn",
+        "cnh", "pln", "czk", "huf", "inr", "krw", "thb",
+    }
+
+    def scan_all_pairs(self, include_crypto: bool = True, max_pairs: int = None) -> list[dict]:
         """
         Scan pairs and return signals.
 
@@ -234,16 +241,21 @@ class ForexScanner:
         forex_open = is_forex_market_open()
 
         if forex_open:
-            pairs = ALL_PAIRS if include_crypto else FOREX_PAIRS
+            pairs = list(ALL_PAIRS if include_crypto else FOREX_PAIRS)
         else:
             # Market closed — only scan crypto (24/7)
-            pairs = CRYPTO_PAIRS if include_crypto else []
+            pairs = list(CRYPTO_PAIRS) if include_crypto else []
             if not pairs:
                 logger.info("Forex market closed, no crypto pairs — skipping scan")
                 return []
             logger.info("Forex market closed — scanning crypto only")
 
-        logger.info(f"Scanning {len(pairs)} pairs...")
+        # Enforce max_pairs limit
+        if max_pairs and len(pairs) > max_pairs:
+            # Prioritize tier-1 pairs, then fill remaining slots
+            tier1 = [p for p in pairs if p in TIER1_PAIRS]
+            rest = [p for p in pairs if p not in TIER1_PAIRS]
+            pairs = tier1 + rest[:max(0, max_pairs - len(tier1))]
 
         if not pairs:
             logger.info("No pairs to scan")
@@ -252,40 +264,54 @@ class ForexScanner:
         # Load lessons every scan cycle so we learn in real-time
         self._load_lessons()
 
-        # Dynamic threshold based on recent performance
-        # CAPPED: max +5% boost so losses don't make recovery impossible
+        # ── Compute effective threshold for THIS cycle (never mutate base) ──
         win_rate = self._get_recent_win_rate()
+        effective_threshold = self.confidence_threshold  # starts at base (0.45)
+
         if win_rate < 0.35:
-            self.confidence_threshold = min(CONFIDENCE_THRESHOLD_DEMO + 0.05, 0.50)
-            logger.info(f"LEARNING: Win rate {win_rate:.0%} — threshold {self.confidence_threshold:.2f} (capped +5%)")
+            effective_threshold = min(self.confidence_threshold + 0.05, 0.50)
         elif win_rate < 0.45:
-            self.confidence_threshold = min(CONFIDENCE_THRESHOLD_DEMO + 0.03, 0.48)
-        else:
-            self.confidence_threshold = CONFIDENCE_THRESHOLD_DEMO
+            effective_threshold = min(self.confidence_threshold + 0.03, 0.48)
 
         # Apply lesson-based confidence boost — capped at +5% total
         lesson_boost = self._lesson_rules.get("confidence_boost", 0)
         if lesson_boost > 0:
             capped_boost = min(lesson_boost, 0.05)
-            self.confidence_threshold = min(0.50, self.confidence_threshold + capped_boost)
-            logger.info(f"LEARNING: Lessons boost +{capped_boost:.0%} (raw {lesson_boost:.0%}) → {self.confidence_threshold:.2f}")
+            effective_threshold = min(0.50, effective_threshold + capped_boost)
+
+        # ── Log cycle state for debugging ──
+        logger.info(
+            f"SCAN CYCLE: pairs={len(pairs)} | "
+            f"base_threshold={self.confidence_threshold:.2f} | "
+            f"effective_threshold={effective_threshold:.2f} | "
+            f"win_rate={win_rate:.0%} | "
+            f"lesson_boost={lesson_boost:.0%}"
+        )
 
         signals = []
-
         skipped_reasons = {}
+
         blocked_symbols = self._lesson_rules.get("blocked_symbols", set())
-        blocked_keywords = self._lesson_rules.get("blocked_keywords", set())
+        # Filter out currency codes from keyword blocks — they're too broad for FX
+        raw_keywords = self._lesson_rules.get("blocked_keywords", set())
+        blocked_keywords = {kw for kw in raw_keywords if kw not in self._CURRENCY_CODES}
+        if raw_keywords - blocked_keywords:
+            logger.info(f"LEARNING: Ignored currency keyword blocks: {raw_keywords - blocked_keywords}")
+
         max_spread_limit = self._lesson_rules.get("max_spread")
+        min_sources = self._lesson_rules.get("min_sources")
+
         for symbol in pairs:
             if symbol in blocked_symbols:
-                skipped_reasons[symbol] = "blocked by lesson (symbol)"
+                skipped_reasons[symbol] = "lesson_block:symbol"
                 continue
 
-            # Check keyword blocks (e.g. "fed", "jpy" from narrative_trap lessons)
+            # Check keyword blocks (e.g. "fed" from narrative_trap lessons)
+            # Currency codes (jpy, usd, etc.) are filtered out above
             sym_lower = symbol.lower()
             keyword_hit = next((kw for kw in blocked_keywords if kw in sym_lower), None)
             if keyword_hit:
-                skipped_reasons[symbol] = f"blocked by lesson (keyword: {keyword_hit})"
+                skipped_reasons[symbol] = f"lesson_block:keyword({keyword_hit})"
                 continue
 
             # Check spread limit from lessons (spread_slippage rule)
@@ -293,37 +319,46 @@ class ForexScanner:
                 try:
                     quote = self.broker.get_quote(symbol)
                     if quote and quote.spread and quote.spread > max_spread_limit:
-                        skipped_reasons[symbol] = f"spread {quote.spread:.1f} > lesson limit {max_spread_limit:.1f}"
+                        skipped_reasons[symbol] = f"lesson_block:spread({quote.spread:.1f}>{max_spread_limit:.1f})"
                         continue
                 except Exception as e:
                     logger.debug(f"Could not check spread for {symbol}: {e}")
+
             try:
-                signal = self._analyze_pair(symbol)
+                signal = self._analyze_pair(symbol, effective_threshold=effective_threshold)
                 if signal:
                     signals.append(signal)
                 else:
-                    skipped_reasons[symbol] = "no signal"
+                    skipped_reasons[symbol] = "scanner_threshold"
             except Exception as e:
                 logger.debug(f"Error analyzing {symbol}: {e}")
-                skipped_reasons[symbol] = str(e)[:50]
+                skipped_reasons[symbol] = f"execution_error:{str(e)[:30]}"
                 continue
 
+        # Log terminal reason for each skip (one line per category)
         if skipped_reasons:
-            logger.info(f"Pairs skipped ({len(skipped_reasons)}): scanned {len(pairs)}, signals {len(signals)}")
+            from collections import Counter
+            reason_counts = Counter(r.split(":")[0] for r in skipped_reasons.values())
+            logger.info(
+                f"Pairs skipped ({len(skipped_reasons)}): "
+                + ", ".join(f"{k}={v}" for k, v in reason_counts.items())
+            )
 
         # Sort by confidence
         signals.sort(key=lambda x: x["confidence"], reverse=True)
-        logger.info(f"Scan complete: {len(signals)} signals found")
+        logger.info(f"Scan complete: {len(signals)} signals found (threshold={effective_threshold:.2f})")
 
         return signals
 
-    def _analyze_pair(self, symbol: str) -> Optional[dict]:
+    def _analyze_pair(self, symbol: str, effective_threshold: float = None) -> Optional[dict]:
         """Analyze a single forex pair for trading signals.
 
         BAR-CLOSE DISCIPLINE: Only uses fully closed candles.
         The most recent candle on each timeframe is dropped because
         it may still be forming. Indicators are computed on closed bars only.
         """
+        if effective_threshold is None:
+            effective_threshold = self.confidence_threshold
         # Get candle data across timeframes
         # Request extra candles so we still have enough after dropping the last
         candles_h1_raw = self.broker.get_candles(symbol, "H1", 101)
@@ -476,7 +511,7 @@ class ForexScanner:
 
         result = compute_confidence(inputs)
 
-        if result.confidence < self.confidence_threshold:
+        if result.confidence < effective_threshold:
             return None
 
         confidence = result.confidence
@@ -536,7 +571,7 @@ class ForexScanner:
             pass
 
         # Recheck after news adjustment
-        if confidence < self.confidence_threshold:
+        if confidence < effective_threshold:
             return None
 
         # ─── SL/TP (improved R:R) ───
