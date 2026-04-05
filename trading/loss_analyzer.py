@@ -227,7 +227,7 @@ class LossAnalyzer:
         # Check for correlated losses (multiple same-direction losses recently)
         same_pair_losses = sum(
             1 for l in self._lessons
-            if l.get("trade_id", "").startswith(trade.market_id or "")
+            if l.get("market_id") == trade.market_id
             and l.get("category") in ("sentiment_mismatch", "model_drift")
         )
         if same_pair_losses >= 2:

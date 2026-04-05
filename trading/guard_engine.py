@@ -292,7 +292,7 @@ class GuardEngine:
         side = signal.get("side", "buy")
 
         if self.oanda:
-            from trading.brokers.oanda import calc_units_from_risk, normalize_units
+            from trading.brokers.oanda import calc_units_from_risk, SizingResult
 
             # Reject if using fallback instrument spec (guessed constraints)
             spec = self.oanda.get_instrument_spec(symbol)
@@ -303,7 +303,7 @@ class GuardEngine:
                 self._log_verdict(signal, approved=False, reason="instrument_spec_unavailable")
                 return approval
 
-            raw_units = calc_units_from_risk(
+            result = calc_units_from_risk(
                 broker=self.oanda,
                 symbol=symbol,
                 balance=balance,
@@ -312,19 +312,14 @@ class GuardEngine:
                 stop_loss=stop_loss,
                 side=side,
             )
-            units = abs(int(raw_units))
+            units = abs(result.units)
 
-            if units == 0:
+            if result.reason is not None:
+                # Sizing failed — reason is already specific
                 approval.approved = False
-                reason = "units_below_min_trade_size"
-                if raw_units == 0:
-                    # Check if it was a conversion failure
-                    quote_ccy = symbol.split("_")[1] if "_" in symbol else "USD"
-                    if quote_ccy != "USD":
-                        reason = f"conversion_rate_missing ({quote_ccy}→USD)"
-                approval.reasons.append(f"{reason} (min={spec['min_trade_size']})")
+                approval.reasons.append(result.reason)
                 approval.guard_results["sizing"] = False
-                self._log_verdict(signal, approved=False, reason=reason)
+                self._log_verdict(signal, approved=False, reason=result.reason)
                 return approval
 
             if theme_scale < 1.0:

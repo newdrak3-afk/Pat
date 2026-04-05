@@ -76,6 +76,13 @@ def normalize_units(spec: dict, units: float, existing_position_units: float = 0
     return abs_units if units >= 0 else -abs_units
 
 
+@dataclass
+class SizingResult:
+    """Result of position sizing calculation."""
+    units: float = 0
+    reason: Optional[str] = None  # None = success, string = why it failed
+
+
 def calc_units_from_risk(
     broker: "OandaBroker",
     symbol: str,
@@ -84,26 +91,19 @@ def calc_units_from_risk(
     entry: float,
     stop_loss: float,
     side: str,
-) -> float:
+) -> SizingResult:
     """Calculate position size from risk in USD account currency.
 
     NOTE: This assumes a USD-denominated account. For non-USD accounts,
     the quote-currency conversion would need to target the actual
     account currency instead of hardcoded USD.
 
-    Steps:
-    1. Compute SL distance in price units
-    2. Convert to USD loss-per-unit via quote currency rate
-    3. Divide risk budget by loss-per-unit
-    4. Normalize to OANDA instrument limits
-
-    Returns 0 if sizing fails (missing conversion rate, zero SL, etc.)
-    — caller MUST skip the trade.
+    Returns SizingResult with units and a reason if sizing failed.
     """
     spec = broker.get_instrument_spec(symbol)
     sl_distance = abs(entry - stop_loss)
     if sl_distance <= 0:
-        return 0
+        return SizingResult(0, "zero_stop_distance")
 
     # Convert SL distance to account currency (USD)
     quote_ccy = symbol.split("_")[1] if "_" in symbol else "USD"
@@ -112,22 +112,25 @@ def calc_units_from_risk(
     else:
         fx_to_usd = broker.get_conversion_rate(quote_ccy, "USD")
         if fx_to_usd <= 0:
-            # Conversion failed — cannot size safely, skip trade
             logger.warning(
                 f"SIZING SKIP {symbol}: no {quote_ccy}→USD rate available"
             )
-            return 0
+            return SizingResult(0, f"conversion_rate_missing ({quote_ccy}→USD)")
         loss_per_unit = sl_distance * fx_to_usd
 
     if loss_per_unit <= 0:
-        return 0
+        return SizingResult(0, "zero_loss_per_unit")
 
     risk_amount = balance * risk_pct
     raw_units = risk_amount / loss_per_unit
 
     # Normalize to OANDA limits
     abs_units = normalize_units(spec, raw_units)
-    return abs_units if side.lower() == "buy" else -abs_units
+    if abs_units == 0:
+        return SizingResult(0, f"below_min_trade_size (min={spec['min_trade_size']})")
+
+    signed = abs_units if side.lower() == "buy" else -abs_units
+    return SizingResult(signed, None)
 
 
 class OandaBroker(BaseBroker):
@@ -209,10 +212,25 @@ class OandaBroker(BaseBroker):
                 f"({'Practice' if self.practice else 'Live'}) — "
                 f"Balance: {balance}"
             )
+            # Warm instrument cache for all tradable pairs
+            self._warm_instrument_cache()
             return True
 
         logger.error("Failed to connect to OANDA")
         return False
+
+    def _warm_instrument_cache(self):
+        """Pre-fetch instrument specs for all tradable pairs at startup."""
+        all_pairs = FOREX_PAIRS + CRYPTO_PAIRS
+        cached = 0
+        for symbol in all_pairs:
+            try:
+                spec = self.get_instrument_spec(symbol)
+                if not spec.get("_fallback"):
+                    cached += 1
+            except Exception:
+                pass
+        logger.info(f"Instrument cache warmed: {cached}/{len(all_pairs)} specs loaded")
 
     # ── Instrument metadata (Recommendation #1) ──
 
