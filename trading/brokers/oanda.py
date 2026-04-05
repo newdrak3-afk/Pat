@@ -8,6 +8,7 @@ Instrument specs (pip size, min/max units, margin) fetched from OANDA metadata.
 import json
 import logging
 import os
+from dataclasses import dataclass
 from decimal import Decimal
 from datetime import datetime
 from typing import Optional
