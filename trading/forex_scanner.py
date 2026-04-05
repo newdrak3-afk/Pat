@@ -465,13 +465,9 @@ class ForexScanner:
         if atr_5 > atr_20 * 2.0:
             regime = "volatile"
 
-        # Pip value
-        if is_crypto:
-            pip = 1.0
-        elif "JPY" in symbol:
-            pip = 0.01
-        else:
-            pip = 0.0001
+        # Pip value from OANDA instrument spec (not hardcoded)
+        spec = self.broker.get_instrument_spec(symbol)
+        pip = spec["pip_size"]
 
         atr_pips = atr / pip
         spread_pips = (quote.ask - quote.bid) / pip if pip > 0 else 0

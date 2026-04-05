@@ -239,17 +239,9 @@ class GuardEngine:
                 pass
             approval.guard_results["theme_cap"] = True
 
-        # ── 10. Position sizing (pip-aware, dynamic based on recent performance) ──
-        from trading.brokers.oanda import CRYPTO_PAIRS
-        is_crypto = symbol in CRYPTO_PAIRS
-
-        # Determine pip value for this pair
-        if is_crypto:
-            pip = 1.0
-        elif "JPY" in symbol:
-            pip = 0.01
-        else:
-            pip = 0.0001
+        # ── 10. Position sizing (broker-driven, account-currency risk) ──
+        # Uses OANDA instrument spec for pip size, min/max units, precision.
+        # Computes loss-per-unit in account currency, not raw price distance.
 
         # Base risk: 0.5% per trade
         risk_pct = 0.005
@@ -294,23 +286,51 @@ class GuardEngine:
         # Apply theme overlap scaling
         risk_pct *= theme_scale
 
-        risk_amount = balance * risk_pct
-        sl_distance = abs(signal.get("entry", 0) - signal.get("stop_loss", 0))
+        # Compute units using broker-driven sizing (account-currency risk)
+        entry = signal.get("entry", 0)
+        stop_loss = signal.get("stop_loss", 0)
+        side = signal.get("side", "buy")
 
-        # Pip-aware sizing: convert stop distance to pips, then size accordingly
-        # units = risk_amount / (sl_pips * pip_value_per_unit)
-        # For standard forex: pip_value ≈ pip for most pairs (simplified for micro accounts)
-        sl_pips = sl_distance / pip if pip > 0 else 0
+        if self.oanda:
+            from trading.brokers.oanda import calc_units_from_risk, normalize_units
+            raw_units = calc_units_from_risk(
+                broker=self.oanda,
+                symbol=symbol,
+                balance=balance,
+                risk_pct=risk_pct,
+                entry=entry,
+                stop_loss=stop_loss,
+                side=side,
+            )
+            units = abs(int(raw_units))
 
-        if sl_pips > 0 and pip > 0:
-            # risk_amount / (sl_pips * pip) gives units
-            units = int(risk_amount / (sl_pips * pip))
-            if is_crypto:
-                units = max(1, min(units, 5))
-            else:
-                units = max(1, min(units, 5000))
+            # Log sizing details including theme impact
+            spec = self.oanda.get_instrument_spec(symbol)
+            units_before_theme = abs(int(calc_units_from_risk(
+                broker=self.oanda, symbol=symbol, balance=balance,
+                risk_pct=risk_pct / theme_scale if theme_scale > 0 else risk_pct,
+                entry=entry, stop_loss=stop_loss, side=side,
+            ))) if theme_scale < 1.0 else units
+
+            if units == 0:
+                approval.approved = False
+                approval.reasons.append(
+                    f"units_below_min_trade_size (min={spec['min_trade_size']})"
+                )
+                approval.guard_results["sizing"] = False
+                self._log_verdict(signal, approved=False, reason="units_below_min_trade_size")
+                return approval
+
+            if theme_scale < 1.0:
+                logger.info(
+                    f"THEME SIZING {symbol}: theme_count→theme_scale={theme_scale:.0%} | "
+                    f"units_before={units_before_theme} units_after={units}"
+                )
         else:
-            units = 1 if is_crypto else 1000
+            # Fallback if no broker reference (shouldn't happen in production)
+            sl_distance = abs(entry - stop_loss)
+            risk_amount = balance * risk_pct
+            units = int(risk_amount / sl_distance) if sl_distance > 0 else 1000
 
         approval.allowed_units = units
         approval.guard_results["sizing"] = True

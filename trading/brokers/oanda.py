@@ -2,11 +2,13 @@
 OANDA broker integration — Forex trading.
 
 Uses OANDA REST API v20 directly (no extra library needed).
+Instrument specs (pip size, min/max units, margin) fetched from OANDA metadata.
 """
 
 import json
 import logging
 import os
+from decimal import Decimal
 from datetime import datetime
 from typing import Optional
 
@@ -42,6 +44,65 @@ CRYPTO_PAIRS = [
 ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
 
 
+def normalize_units(spec: dict, units: float) -> float:
+    """Validate and normalize units to OANDA instrument constraints.
+
+    Respects minimumTradeSize, maximumOrderUnits, and tradeUnitsPrecision.
+    Returns 0 if units are below minimum (caller should skip the trade).
+    """
+    min_size = spec["min_trade_size"]
+    max_units = spec["max_order_units"]
+    precision = spec["units_precision"]
+
+    abs_units = min(abs(units), max_units)
+    if abs_units < min_size:
+        return 0
+
+    step = 10 ** (-precision) if precision > 0 else 1
+    abs_units = int(abs_units / step) * step
+
+    return abs_units if units >= 0 else -abs_units
+
+
+def calc_units_from_risk(
+    broker: "OandaBroker",
+    symbol: str,
+    balance: float,
+    risk_pct: float,
+    entry: float,
+    stop_loss: float,
+    side: str,
+) -> float:
+    """Calculate position size from risk in account currency.
+
+    Converts stop-loss distance to account-currency loss per unit,
+    then divides risk budget by that to get units.
+    Normalizes to OANDA instrument limits.
+    """
+    spec = broker.get_instrument_spec(symbol)
+    sl_distance = abs(entry - stop_loss)
+    if sl_distance <= 0:
+        return 0
+
+    # Convert SL distance to account currency (assumed USD)
+    quote_ccy = symbol.split("_")[1] if "_" in symbol else "USD"
+    if quote_ccy == "USD":
+        loss_per_unit = sl_distance
+    else:
+        fx_to_usd = broker.get_conversion_rate(quote_ccy, "USD")
+        loss_per_unit = sl_distance * fx_to_usd
+
+    if loss_per_unit <= 0:
+        return 0
+
+    risk_amount = balance * risk_pct
+    raw_units = risk_amount / loss_per_unit
+
+    # Normalize to OANDA limits
+    abs_units = normalize_units(spec, raw_units)
+    return abs_units if side.lower() == "buy" else -abs_units
+
+
 class OandaBroker(BaseBroker):
     """
     OANDA Forex broker integration.
@@ -65,6 +126,8 @@ class OandaBroker(BaseBroker):
             self.base_url = "https://api-fxtrade.oanda.com/v3"
 
         self.connected = False
+        self._instrument_cache: dict[str, dict] = {}
+        self._account_state: dict = {}  # cached account snapshot
 
     def _headers(self) -> dict:
         return {
@@ -123,6 +186,113 @@ class OandaBroker(BaseBroker):
 
         logger.error("Failed to connect to OANDA")
         return False
+
+    # ── Instrument metadata (Recommendation #1) ──
+
+    def get_instrument_spec(self, symbol: str) -> dict:
+        """Fetch instrument spec from OANDA and cache it.
+
+        Returns pip_size, display_precision, min/max units, margin rate, etc.
+        Falls back to hardcoded defaults if the API call fails.
+        """
+        if symbol in self._instrument_cache:
+            return self._instrument_cache[symbol]
+
+        spec = self._fetch_instrument_spec(symbol)
+        self._instrument_cache[symbol] = spec
+        return spec
+
+    def _fetch_instrument_spec(self, symbol: str) -> dict:
+        """Call OANDA instruments endpoint for one symbol."""
+        try:
+            resp = self._get(
+                f"/accounts/{self.account_id}/instruments",
+                params={"instruments": symbol},
+            )
+            instruments = (resp or {}).get("instruments", [])
+            if instruments:
+                inst = instruments[0]
+                pip_location = int(inst.get("pipLocation", -4))
+                spec = {
+                    "name": inst["name"],
+                    "pip_location": pip_location,
+                    "pip_size": float(Decimal("10") ** pip_location),
+                    "display_precision": int(inst.get("displayPrecision", 5)),
+                    "units_precision": int(inst.get("tradeUnitsPrecision", 0)),
+                    "min_trade_size": float(inst.get("minimumTradeSize", 1)),
+                    "max_order_units": float(inst.get("maximumOrderUnits", 100000000)),
+                    "max_position_size": float(inst.get("maximumPositionSize", 0)),
+                    "margin_rate": float(inst.get("marginRate", 0.02)),
+                    "type": inst.get("type", "CURRENCY"),
+                }
+                logger.debug(
+                    f"Instrument spec {symbol}: pip={spec['pip_size']} "
+                    f"precision={spec['units_precision']} "
+                    f"min={spec['min_trade_size']} max={spec['max_order_units']}"
+                )
+                return spec
+        except Exception as e:
+            logger.warning(f"Could not fetch instrument spec for {symbol}: {e}")
+
+        # Fallback for when API is unavailable
+        is_jpy = "JPY" in symbol
+        is_crypto = symbol in CRYPTO_PAIRS
+        return {
+            "name": symbol,
+            "pip_location": -2 if is_jpy else (-1 if is_crypto else -4),
+            "pip_size": 0.01 if is_jpy else (1.0 if is_crypto else 0.0001),
+            "display_precision": 3 if is_jpy else (1 if is_crypto else 5),
+            "units_precision": 0,
+            "min_trade_size": 1.0,
+            "max_order_units": 5.0 if is_crypto else 100000000.0,
+            "max_position_size": 0,
+            "margin_rate": 0.02,
+            "type": "CURRENCY",
+        }
+
+    def get_conversion_rate(self, from_ccy: str, to_ccy: str) -> float:
+        """Get conversion rate between two currencies.
+
+        Used to convert non-USD quote currency risk to account currency (USD).
+        """
+        if from_ccy == to_ccy:
+            return 1.0
+
+        # Try direct pair
+        pair = f"{from_ccy}_{to_ccy}"
+        quote = self.get_quote(pair)
+        if quote and quote.mid > 0:
+            return quote.mid
+
+        # Try inverse pair
+        pair_inv = f"{to_ccy}_{from_ccy}"
+        quote = self.get_quote(pair_inv)
+        if quote and quote.mid > 0:
+            return 1.0 / quote.mid
+
+        logger.warning(f"Could not get conversion rate {from_ccy}→{to_ccy}, using 1.0")
+        return 1.0
+
+    def get_account_snapshot(self) -> dict:
+        """Get full account details for consistent guard state.
+
+        Returns balance, NAV, margin available, open trade count, etc.
+        Caches result in self._account_state.
+        """
+        result = self._get(f"/accounts/{self.account_id}/summary")
+        if result and "account" in result:
+            acct = result["account"]
+            self._account_state = {
+                "balance": float(acct.get("balance", 0)),
+                "nav": float(acct.get("NAV", 0)),
+                "unrealized_pnl": float(acct.get("unrealizedPL", 0)),
+                "margin_used": float(acct.get("marginUsed", 0)),
+                "margin_available": float(acct.get("marginAvailable", 0)),
+                "open_trade_count": int(acct.get("openTradeCount", 0)),
+                "open_position_count": int(acct.get("openPositionCount", 0)),
+                "last_transaction_id": acct.get("lastTransactionID", ""),
+            }
+        return self._account_state
 
     def get_account_balance(self) -> float:
         """Get account balance."""
@@ -336,12 +506,9 @@ class OandaBroker(BaseBroker):
         """
         Place a forex order with stop loss and take profit.
 
-        Args:
-            symbol: Forex pair
-            side: "buy" or "sell"
-            quantity: Units
-            stop_loss_pips: Stop loss in pips
-            take_profit_pips: Take profit in pips
+        Uses instrument spec for pip size and price precision.
+        Validates units against OANDA min/max before sending.
+        Logs full rejection details on failure.
         """
         if not self.connected:
             return OrderResult(
@@ -355,11 +522,23 @@ class OandaBroker(BaseBroker):
                 success=False, message=f"Could not get quote for {symbol}"
             )
 
-        # Calculate pip value (most pairs = 0.0001, JPY pairs = 0.01)
-        if "JPY" in symbol:
-            pip = 0.01
-        else:
-            pip = 0.0001
+        # Use instrument spec for pip size and precision (not hardcoded)
+        spec = self.get_instrument_spec(symbol)
+        pip = spec["pip_size"]
+        price_precision = spec["display_precision"]
+
+        # Validate units against OANDA limits
+        abs_qty = abs(quantity)
+        abs_qty = normalize_units(spec, abs_qty)
+        if abs_qty == 0:
+            logger.warning(
+                f"ORDER SKIP {symbol}: units {quantity} below min_trade_size "
+                f"{spec['min_trade_size']} or zero after normalization"
+            )
+            return OrderResult(
+                success=False,
+                message=f"units_below_min_trade_size ({spec['min_trade_size']})",
+            )
 
         entry = quote.ask if side == "buy" else quote.bid
 
@@ -370,20 +549,28 @@ class OandaBroker(BaseBroker):
             sl = entry + (stop_loss_pips * pip)
             tp = entry - (take_profit_pips * pip)
 
-        units = str(int(quantity)) if side == "buy" else str(-int(quantity))
+        # Signed units: negative = sell
+        signed_units = abs_qty if side == "buy" else -abs_qty
+        units_str = str(int(signed_units)) if spec["units_precision"] == 0 else str(signed_units)
+
+        # Format prices to instrument's display precision
+        price_fmt = f"{{:.{price_precision}f}}"
+        sl_str = price_fmt.format(sl)
+        tp_str = price_fmt.format(tp)
 
         order_data = {
             "order": {
                 "instrument": symbol,
-                "units": units,
+                "units": units_str,
                 "type": "MARKET",
                 "timeInForce": "FOK",
+                "positionFill": "DEFAULT",
                 "stopLossOnFill": {
-                    "price": f"{sl:.5f}",
+                    "price": sl_str,
                     "timeInForce": "GTC",
                 },
                 "takeProfitOnFill": {
-                    "price": f"{tp:.5f}",
+                    "price": tp_str,
                     "timeInForce": "GTC",
                 },
             }
@@ -394,7 +581,11 @@ class OandaBroker(BaseBroker):
         )
 
         if not result:
-            return OrderResult(success=False, message="No response")
+            logger.error(
+                f"ORDER FAILED {symbol}: no response | "
+                f"units={units_str} side={side} SL={sl_str} TP={tp_str}"
+            )
+            return OrderResult(success=False, message="No response from OANDA")
 
         if "orderFillTransaction" in result:
             fill = result["orderFillTransaction"]
@@ -403,18 +594,27 @@ class OandaBroker(BaseBroker):
                 order_id=fill.get("id", ""),
                 symbol=symbol,
                 side=side,
-                quantity=quantity,
+                quantity=abs_qty,
                 price=float(fill.get("price", 0)),
                 order_type="market",
                 status="filled",
-                message=f"SL: {sl:.5f} | TP: {tp:.5f}",
+                message=f"SL: {sl_str} | TP: {tp_str}",
             )
 
+        # Detailed rejection logging (Recommendation #7)
+        reject = result.get("orderRejectTransaction", {})
+        reject_reason = reject.get("rejectReason", "unknown")
+        acct_snapshot = self._account_state or {}
+        logger.error(
+            f"ORDER REJECTED {symbol}: {reject_reason} | "
+            f"units={units_str} side={side} SL={sl_str} TP={tp_str} | "
+            f"NAV={acct_snapshot.get('nav', '?')} "
+            f"margin_avail={acct_snapshot.get('margin_available', '?')} | "
+            f"full_response={json.dumps(reject)[:500]}"
+        )
         return OrderResult(
             success=False,
-            message=result.get("orderRejectTransaction", {}).get(
-                "rejectReason", str(result)
-            ),
+            message=f"order_rejected_by_oanda: {reject_reason}",
         )
 
     def get_positions(self) -> list[Position]:
@@ -521,11 +721,8 @@ class OandaBroker(BaseBroker):
         spreads = []
 
         for q in quotes:
-            if "JPY" in q.symbol:
-                pip = 0.01
-            else:
-                pip = 0.0001
-
+            spec = self.get_instrument_spec(q.symbol)
+            pip = spec["pip_size"]
             spread_pips = (q.ask - q.bid) / pip if pip > 0 else 0
 
             spreads.append({
