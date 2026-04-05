@@ -74,6 +74,10 @@ def normalize_units(spec: dict, units: float, existing_position_units: float = 0
         step = 10 ** (-precision)
         abs_units = int(abs_units / step) * step
 
+    # Post-rounding check: rounding may have dropped below minimum
+    if abs_units < min_size:
+        return 0
+
     return abs_units if units >= 0 else -abs_units
 
 
@@ -490,8 +494,19 @@ class OandaBroker(BaseBroker):
                 success=False, message="Not connected to OANDA"
             )
 
-        # Negative units = sell
-        units = str(int(quantity)) if side == "buy" else str(-int(quantity))
+        # Normalize units using instrument spec (same logic as place_order_with_stops)
+        spec = self.get_instrument_spec(symbol)
+        abs_qty = normalize_units(spec, abs(quantity))
+        if abs_qty == 0:
+            return OrderResult(
+                success=False,
+                message=f"units_below_min_trade_size ({spec['min_trade_size']})",
+            )
+        signed = abs_qty if side == "buy" else -abs_qty
+        if spec["units_precision"] == 0:
+            units = str(int(signed))
+        else:
+            units = f"{signed:.{spec['units_precision']}f}"
 
         order_data = {
             "order": {

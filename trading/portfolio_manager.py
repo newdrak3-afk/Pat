@@ -105,10 +105,47 @@ class PortfolioManager:
         side = {"buy": "long", "sell": "short"}.get(side, side)
 
         if symbol in self._positions:
-            raise ValueError(
-                f"Position already exists for {symbol}. "
-                "Remove it first or use a different symbol key."
-            )
+            # Accumulate into existing position instead of crashing.
+            # Multiple trades on the same pair are allowed (up to 2).
+            existing = self._positions[symbol]
+            if side == existing.side:
+                # Same direction — add units, recalc avg price
+                total_units = existing.quantity + units
+                existing.entry_price = (
+                    (existing.entry_price * existing.quantity + entry_price * units)
+                    / total_units
+                )
+                existing.quantity = total_units
+                logger.info(
+                    "Accumulated position: %s %s now %.0f units @ %.5f",
+                    side, symbol, total_units, existing.entry_price,
+                )
+                return
+            else:
+                # Opposite direction — net out
+                if units >= existing.quantity:
+                    self._positions.pop(symbol)
+                    logger.info("Netted out position for %s", symbol)
+                    remaining = units - existing.quantity
+                    if remaining > 0:
+                        # Open new position in opposite direction
+                        pos = PortfolioPosition(
+                            symbol=symbol, side=side,
+                            quantity=remaining, entry_price=entry_price,
+                        )
+                        self._positions[symbol] = pos
+                        logger.info(
+                            "Flipped position: %s %s %.0f units @ %.5f",
+                            side, symbol, remaining, entry_price,
+                        )
+                    return
+                else:
+                    existing.quantity -= units
+                    logger.info(
+                        "Reduced position: %s %s now %.0f units",
+                        existing.side, symbol, existing.quantity,
+                    )
+                    return
         if side not in ("long", "short"):
             raise ValueError(f"side must be 'long' or 'short', got '{side}'")
         if units <= 0:
