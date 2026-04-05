@@ -44,22 +44,34 @@ CRYPTO_PAIRS = [
 ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
 
 
-def normalize_units(spec: dict, units: float) -> float:
+def normalize_units(spec: dict, units: float, existing_position_units: float = 0) -> float:
     """Validate and normalize units to OANDA instrument constraints.
 
-    Respects minimumTradeSize, maximumOrderUnits, and tradeUnitsPrecision.
+    Enforces minimumTradeSize, maximumOrderUnits, maximumPositionSize,
+    and tradeUnitsPrecision.
     Returns 0 if units are below minimum (caller should skip the trade).
     """
     min_size = spec["min_trade_size"]
     max_units = spec["max_order_units"]
+    max_position = spec.get("max_position_size", 0)
     precision = spec["units_precision"]
 
     abs_units = min(abs(units), max_units)
+
+    # Enforce max position size (different from max order size)
+    if max_position > 0:
+        remaining_capacity = max(0, max_position - abs(existing_position_units))
+        abs_units = min(abs_units, remaining_capacity)
+
     if abs_units < min_size:
         return 0
 
-    step = 10 ** (-precision) if precision > 0 else 1
-    abs_units = int(abs_units / step) * step
+    # Round to instrument's trade unit precision
+    if precision == 0:
+        abs_units = int(abs_units)
+    else:
+        step = 10 ** (-precision)
+        abs_units = int(abs_units / step) * step
 
     return abs_units if units >= 0 else -abs_units
 
@@ -73,23 +85,38 @@ def calc_units_from_risk(
     stop_loss: float,
     side: str,
 ) -> float:
-    """Calculate position size from risk in account currency.
+    """Calculate position size from risk in USD account currency.
 
-    Converts stop-loss distance to account-currency loss per unit,
-    then divides risk budget by that to get units.
-    Normalizes to OANDA instrument limits.
+    NOTE: This assumes a USD-denominated account. For non-USD accounts,
+    the quote-currency conversion would need to target the actual
+    account currency instead of hardcoded USD.
+
+    Steps:
+    1. Compute SL distance in price units
+    2. Convert to USD loss-per-unit via quote currency rate
+    3. Divide risk budget by loss-per-unit
+    4. Normalize to OANDA instrument limits
+
+    Returns 0 if sizing fails (missing conversion rate, zero SL, etc.)
+    — caller MUST skip the trade.
     """
     spec = broker.get_instrument_spec(symbol)
     sl_distance = abs(entry - stop_loss)
     if sl_distance <= 0:
         return 0
 
-    # Convert SL distance to account currency (assumed USD)
+    # Convert SL distance to account currency (USD)
     quote_ccy = symbol.split("_")[1] if "_" in symbol else "USD"
     if quote_ccy == "USD":
         loss_per_unit = sl_distance
     else:
         fx_to_usd = broker.get_conversion_rate(quote_ccy, "USD")
+        if fx_to_usd <= 0:
+            # Conversion failed — cannot size safely, skip trade
+            logger.warning(
+                f"SIZING SKIP {symbol}: no {quote_ccy}→USD rate available"
+            )
+            return 0
         loss_per_unit = sl_distance * fx_to_usd
 
     if loss_per_unit <= 0:
@@ -234,9 +261,14 @@ class OandaBroker(BaseBroker):
         except Exception as e:
             logger.warning(f"Could not fetch instrument spec for {symbol}: {e}")
 
-        # Fallback for when API is unavailable
+        # Fallback for when API is unavailable — NOT authoritative.
+        # If we're using this, instrument spec fetch failed. Log a warning.
         is_jpy = "JPY" in symbol
         is_crypto = symbol in CRYPTO_PAIRS
+        logger.warning(
+            f"Using FALLBACK instrument spec for {symbol} — "
+            f"OANDA API unavailable. Sizing may be approximate."
+        )
         return {
             "name": symbol,
             "pip_location": -2 if is_jpy else (-1 if is_crypto else -4),
@@ -248,12 +280,15 @@ class OandaBroker(BaseBroker):
             "max_position_size": 0,
             "margin_rate": 0.02,
             "type": "CURRENCY",
+            "_fallback": True,  # flag so callers can detect degraded mode
         }
 
     def get_conversion_rate(self, from_ccy: str, to_ccy: str) -> float:
         """Get conversion rate between two currencies.
 
         Used to convert non-USD quote currency risk to account currency (USD).
+        Returns 0.0 if conversion fails — caller MUST skip the trade.
+        Never guesses a rate; wrong sizing is worse than no trade.
         """
         if from_ccy == to_ccy:
             return 1.0
@@ -270,8 +305,11 @@ class OandaBroker(BaseBroker):
         if quote and quote.mid > 0:
             return 1.0 / quote.mid
 
-        logger.warning(f"Could not get conversion rate {from_ccy}→{to_ccy}, using 1.0")
-        return 1.0
+        logger.error(
+            f"CONVERSION FAILED: {from_ccy}→{to_ccy} — "
+            f"no quote available. Trade MUST be skipped."
+        )
+        return 0.0
 
     def get_account_snapshot(self) -> dict:
         """Get full account details for consistent guard state.
@@ -551,7 +589,10 @@ class OandaBroker(BaseBroker):
 
         # Signed units: negative = sell
         signed_units = abs_qty if side == "buy" else -abs_qty
-        units_str = str(int(signed_units)) if spec["units_precision"] == 0 else str(signed_units)
+        if spec["units_precision"] == 0:
+            units_str = str(int(signed_units))
+        else:
+            units_str = f"{signed_units:.{spec['units_precision']}f}"
 
         # Format prices to instrument's display precision
         price_fmt = f"{{:.{price_precision}f}}"
