@@ -211,18 +211,33 @@ class LossAnalyzer:
         return "unknown"
 
     def _categorize_forex_loss(self, trade: Trade, prediction: Prediction) -> str:
-        """Categorize a forex trading loss based on available info."""
+        """Categorize a forex trading loss using trade metadata.
+
+        Uses actual trade context (spread, regime, session) when available,
+        not just confidence bands. Falls back to confidence-based buckets
+        only when richer metadata is missing.
+        """
         confidence = prediction.confidence if prediction else 0
 
-        # Overconfidence: high confidence but still lost
+        # Check for spread slippage (if trade metadata has spread info)
+        spread_pips = getattr(trade, "spread_pips", None)
+        if spread_pips and spread_pips > 3.0:
+            return "spread_slippage"
+
+        # Check for correlated losses (multiple same-direction losses recently)
+        same_pair_losses = sum(
+            1 for l in self._lessons
+            if l.get("trade_id", "").startswith(trade.market_id or "")
+            and l.get("category") in ("sentiment_mismatch", "model_drift")
+        )
+        if same_pair_losses >= 2:
+            return "correlated_loss"
+
+        # Confidence-based fallback (less specific)
         if confidence > 0.7:
             return "overconfidence"
-
-        # Model drift: moderate confidence, market moved against
         if confidence > 0.5:
             return "model_drift"
-
-        # Low confidence trade that lost — shouldn't have been taken
         if confidence < 0.45:
             return "late_entry"
 
@@ -434,6 +449,9 @@ Be specific about what the system got wrong and what to do differently."""
                 trade, market, research, prediction, category
             )
 
+    # Minimum occurrences of same category before a rule becomes live
+    RULE_PROMOTION_THRESHOLD = 3
+
     def _generate_rule(
         self,
         category: str,
@@ -442,52 +460,73 @@ Be specific about what the system got wrong and what to do differently."""
         research: ResearchResult,
         prediction: Prediction,
     ) -> str:
-        """Generate a specific corrective rule based on the failure."""
-        cat_info = FAILURE_CATEGORIES.get(category, FAILURE_CATEGORIES["unknown"])
+        """Generate a corrective rule based on the failure.
 
-        # Generate specific rules based on failure type
+        Rules are conservative by design:
+        - No global threshold raising (counterproductive for recovery)
+        - No block_keyword from market.question (doesn't apply to FX)
+        - Spread/liquidity rules are pair-scoped, not global
+        - Most rules only become "live" after RULE_PROMOTION_THRESHOLD repeats
+        - Overconfidence → diagnostic only, not live rule mutation
+        """
+        is_forex = trade.side in ("buy", "sell")
+
+        # Count how many times this category has occurred
+        same_cat_count = sum(
+            1 for l in self._lessons if l.get("category") == category
+        )
+
         if category == "sentiment_mismatch":
-            # Check if this market's category has caused problems before
-            same_cat_losses = sum(
-                1 for l in self._lessons
-                if l.get("category") == "sentiment_mismatch"
-            )
-            if same_cat_losses >= 2:
-                return f"block_category:{market.category}"
-            return "raise_sentiment_threshold:0.35"
+            if same_cat_count >= self.RULE_PROMOTION_THRESHOLD:
+                return "require_min_sources:3"
+            return "diagnostic:sentiment_mismatch"
 
         elif category == "low_liquidity_trap":
-            new_min = max(market.liquidity * 2, 10_000)
+            new_min = max(getattr(market, "liquidity", 0) * 2, 10_000)
             return f"min_liquidity:{new_min}"
 
         elif category == "overconfidence":
-            return "raise_confidence_threshold:0.70"
+            # NEVER raise global threshold — that makes recovery harder.
+            # Instead, flag for review. If repeated, require extra confirmation.
+            if same_cat_count >= self.RULE_PROMOTION_THRESHOLD:
+                return "require_min_sources:2"
+            return "diagnostic:overconfidence"
 
         elif category == "spread_slippage":
-            new_max = max(market.spread * 0.7, 2.0)
+            spread_val = getattr(market, "spread", 5.0)
+            new_max = max(spread_val * 0.7, 2.0)
             return f"max_spread:{new_max}"
 
         elif category == "narrative_trap":
-            # Block keywords from this market to avoid similar traps
-            keywords = market.question.lower().split()
-            # Find the most distinctive keyword
-            distinctive = [
-                w for w in keywords
-                if len(w) > 4 and w not in {
-                    "will", "does", "market", "price", "before"
-                }
-            ]
-            if distinctive:
-                return f"block_keyword:{distinctive[0]}"
-            return "require_min_sources:10"
+            if is_forex:
+                # For forex, block_keyword from market.question is nonsense.
+                # Instead, require multiple confirming sources.
+                return "require_min_sources:3"
+            else:
+                # For non-forex (prediction markets), keyword blocking makes sense
+                keywords = getattr(market, "question", "").lower().split()
+                distinctive = [
+                    w for w in keywords
+                    if len(w) > 4 and w not in {
+                        "will", "does", "market", "price", "before"
+                    }
+                ]
+                if distinctive:
+                    return f"block_keyword:{distinctive[0]}"
+                return "require_min_sources:10"
 
         elif category == "correlated_loss":
-            return f"block_category:{market.category}"
+            # Don't hard-block categories — reduce exposure instead
+            return "diagnostic:correlated_loss"
 
         elif category == "model_drift":
-            return "trigger_retrain"
+            # Flag for review, don't auto-mutate live behavior
+            return "diagnostic:model_drift"
 
-        return cat_info.get("default_rule", "flag_for_review")
+        elif category == "late_entry":
+            return "diagnostic:late_entry"
+
+        return "diagnostic:unknown"
 
     def get_lessons_summary(self) -> str:
         """Return a summary of all lessons learned."""

@@ -293,6 +293,16 @@ class GuardEngine:
 
         if self.oanda:
             from trading.brokers.oanda import calc_units_from_risk, normalize_units
+
+            # Reject if using fallback instrument spec (guessed constraints)
+            spec = self.oanda.get_instrument_spec(symbol)
+            if spec.get("_fallback"):
+                approval.approved = False
+                approval.reasons.append("instrument_spec_unavailable (fallback)")
+                approval.guard_results["sizing"] = False
+                self._log_verdict(signal, approved=False, reason="instrument_spec_unavailable")
+                return approval
+
             raw_units = calc_units_from_risk(
                 broker=self.oanda,
                 symbol=symbol,
@@ -304,27 +314,22 @@ class GuardEngine:
             )
             units = abs(int(raw_units))
 
-            # Log sizing details including theme impact
-            spec = self.oanda.get_instrument_spec(symbol)
-            units_before_theme = abs(int(calc_units_from_risk(
-                broker=self.oanda, symbol=symbol, balance=balance,
-                risk_pct=risk_pct / theme_scale if theme_scale > 0 else risk_pct,
-                entry=entry, stop_loss=stop_loss, side=side,
-            ))) if theme_scale < 1.0 else units
-
             if units == 0:
                 approval.approved = False
-                approval.reasons.append(
-                    f"units_below_min_trade_size (min={spec['min_trade_size']})"
-                )
+                reason = "units_below_min_trade_size"
+                if raw_units == 0:
+                    # Check if it was a conversion failure
+                    quote_ccy = symbol.split("_")[1] if "_" in symbol else "USD"
+                    if quote_ccy != "USD":
+                        reason = f"conversion_rate_missing ({quote_ccy}→USD)"
+                approval.reasons.append(f"{reason} (min={spec['min_trade_size']})")
                 approval.guard_results["sizing"] = False
-                self._log_verdict(signal, approved=False, reason="units_below_min_trade_size")
+                self._log_verdict(signal, approved=False, reason=reason)
                 return approval
 
             if theme_scale < 1.0:
                 logger.info(
-                    f"THEME SIZING {symbol}: theme_count→theme_scale={theme_scale:.0%} | "
-                    f"units_before={units_before_theme} units_after={units}"
+                    f"THEME SIZING {symbol}: scale={theme_scale:.0%} → units={units}"
                 )
         else:
             # Fallback if no broker reference (shouldn't happen in production)
