@@ -260,10 +260,9 @@ class ForexScanner:
         # ── Log cycle state for debugging ──
         logger.info(
             f"SCAN CYCLE: pairs={len(pairs)} | "
-            f"base_threshold={self.confidence_threshold:.2f} | "
-            f"effective_threshold={effective_threshold:.2f} | "
+            f"threshold={effective_threshold:.2f} (fixed) | "
             f"win_rate={win_rate:.0%} | "
-            f"lesson_boost={lesson_boost:.0%}"
+            f"lessons={self._lesson_rules.get('total_lessons', 0)}"
         )
 
         signals = []
