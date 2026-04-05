@@ -205,8 +205,10 @@ class GuardEngine:
             signal["take_profit"] = adj_tp
             approval.guard_results["slippage"] = True
 
-        # ── 9. Same-theme exposure cap ──
-        # Max 2 positions with the same base/quote currency
+        # ── 9. Same-theme exposure (soft penalty, not hard block) ──
+        # Currency overlap is normal in FX (USD appears in most pairs).
+        # Instead of blocking, reduce position size proportionally.
+        theme_scale = 1.0
         if self.portfolio:
             symbol_currencies = set()
             parts = symbol.replace("_", "/").split("/")
@@ -222,19 +224,32 @@ class GuardEngine:
                     pos_currencies = set(p.upper() for p in pos_parts)
                     if symbol_currencies & pos_currencies:  # overlap
                         theme_count += 1
-                if theme_count >= 2:
+                if theme_count >= 4:
+                    # Only hard-block at extreme concentration (4+ same-currency)
                     approval.approved = False
                     approval.reasons.append(f"Theme cap: {theme_count} positions share {'/'.join(symbol_currencies)}")
                     approval.guard_results["theme_cap"] = False
-                    self._log_verdict(signal, approved=False, reason="Same-theme exposure cap")
+                    self._log_verdict(signal, approved=False, reason="Same-theme exposure cap (4+)")
                     return approval
+                elif theme_count >= 2:
+                    # Soft penalty: scale down size by 25% per overlap above 1
+                    theme_scale = max(0.25, 1.0 - 0.25 * (theme_count - 1))
+                    approval.reasons.append(f"Theme penalty: {theme_count} overlaps → {theme_scale:.0%} size")
             except Exception:
                 pass
             approval.guard_results["theme_cap"] = True
 
-        # ── 10. Position sizing (dynamic based on recent performance) ──
+        # ── 10. Position sizing (pip-aware, dynamic based on recent performance) ──
         from trading.brokers.oanda import CRYPTO_PAIRS
         is_crypto = symbol in CRYPTO_PAIRS
+
+        # Determine pip value for this pair
+        if is_crypto:
+            pip = 1.0
+        elif "JPY" in symbol:
+            pip = 0.01
+        else:
+            pip = 0.0001
 
         # Base risk: 0.5% per trade
         risk_pct = 0.005
@@ -276,11 +291,20 @@ class GuardEngine:
             except Exception as e:
                 logger.debug(f"Dynamic sizing check failed: {e}")
 
+        # Apply theme overlap scaling
+        risk_pct *= theme_scale
+
         risk_amount = balance * risk_pct
         sl_distance = abs(signal.get("entry", 0) - signal.get("stop_loss", 0))
 
-        if sl_distance > 0:
-            units = int(risk_amount / sl_distance)
+        # Pip-aware sizing: convert stop distance to pips, then size accordingly
+        # units = risk_amount / (sl_pips * pip_value_per_unit)
+        # For standard forex: pip_value ≈ pip for most pairs (simplified for micro accounts)
+        sl_pips = sl_distance / pip if pip > 0 else 0
+
+        if sl_pips > 0 and pip > 0:
+            # risk_amount / (sl_pips * pip) gives units
+            units = int(risk_amount / (sl_pips * pip))
             if is_crypto:
                 units = max(1, min(units, 5))
             else:

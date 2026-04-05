@@ -173,7 +173,7 @@ class ForexScanner:
                 "blocked_symbols": blocked_symbols,
                 "blocked_categories": blocked_categories,
                 "blocked_keywords": blocked_keywords,
-                "confidence_boost": min(confidence_boost, 0.20),  # cap at +20%
+                "confidence_boost": min(confidence_boost, 0.05),  # cap at +5% (was +20%)
                 "max_spread": max_spread,
                 "min_liquidity": min_liquidity,
                 "min_sources": min_sources,
@@ -253,21 +253,22 @@ class ForexScanner:
         self._load_lessons()
 
         # Dynamic threshold based on recent performance
+        # CAPPED: max +5% boost so losses don't make recovery impossible
         win_rate = self._get_recent_win_rate()
         if win_rate < 0.35:
-            # Losing streak — raise threshold to be more selective
-            self.confidence_threshold = min(0.65, CONFIDENCE_THRESHOLD_DEMO + 0.10)
-            logger.info(f"LEARNING: Win rate {win_rate:.0%} — raised threshold to {self.confidence_threshold:.2f}")
+            self.confidence_threshold = min(CONFIDENCE_THRESHOLD_DEMO + 0.05, 0.50)
+            logger.info(f"LEARNING: Win rate {win_rate:.0%} — threshold {self.confidence_threshold:.2f} (capped +5%)")
         elif win_rate < 0.45:
-            self.confidence_threshold = min(0.60, CONFIDENCE_THRESHOLD_DEMO + 0.05)
+            self.confidence_threshold = min(CONFIDENCE_THRESHOLD_DEMO + 0.03, 0.48)
         else:
             self.confidence_threshold = CONFIDENCE_THRESHOLD_DEMO
 
-        # Apply lesson-based confidence boost
+        # Apply lesson-based confidence boost — capped at +5% total
         lesson_boost = self._lesson_rules.get("confidence_boost", 0)
         if lesson_boost > 0:
-            self.confidence_threshold = min(0.70, self.confidence_threshold + lesson_boost)
-            logger.info(f"LEARNING: Lessons raised threshold by +{lesson_boost:.0%} → {self.confidence_threshold:.2f}")
+            capped_boost = min(lesson_boost, 0.05)
+            self.confidence_threshold = min(0.50, self.confidence_threshold + capped_boost)
+            logger.info(f"LEARNING: Lessons boost +{capped_boost:.0%} (raw {lesson_boost:.0%}) → {self.confidence_threshold:.2f}")
 
         signals = []
 
