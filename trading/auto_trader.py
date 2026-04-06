@@ -133,9 +133,13 @@ class AutoTrader:
             "blocked_signals": 0,
         }
 
-        # Cross-cycle cooldown: {symbol: {"side": str, "entry": float, "time": datetime}}
+        # Cross-cycle cooldown: {symbol: {"side": str, "entry": float, "time": isoformat}}
         self._recent_trades: dict[str, dict] = {}
-        self._trade_cooldown_seconds = 1800  # 30 min cooldown per symbol
+        self._trade_cooldown_seconds = 3600  # 60 min cooldown per symbol
+
+        # Stop-loss cooldown: {symbol: isoformat} — no re-entry for 2h after SL hit
+        self._stoploss_cooldowns: dict[str, str] = {}
+        self._stoploss_cooldown_seconds = 7200  # 2 hours after stop-out
 
         self._load_state()
 
@@ -452,6 +456,11 @@ class AutoTrader:
             self._stats["losses"] += close_result["losses"]
             self._stats["total_pnl"] += close_result["pnl"]
 
+            # Record stop-loss cooldowns for any symbols that just lost
+            for closed_symbol in close_result.get("closed_symbols_loss", []):
+                self._stoploss_cooldowns[closed_symbol] = datetime.utcnow().isoformat()
+                logger.info(f"SL COOLDOWN: {closed_symbol} — no re-entry for {self._stoploss_cooldown_seconds}s")
+
         # Step 3: Scan for new signals
         signals = self.scanner.scan_all_pairs()
 
@@ -472,10 +481,9 @@ class AutoTrader:
         trades_placed = 0
         trades_blocked = 0
         block_reasons = []
-        # Always allow up to 10 trades per cycle and 10 open positions
-        # We have other guards (drawdown, drift) to protect us
-        max_trades = 10
-        max_open = 10
+        # Conservative limits until strategy is proven
+        max_trades = 2
+        max_open = 2
 
         symbols_traded_this_cycle = set()
         for signal in signals:
@@ -539,6 +547,20 @@ class AutoTrader:
                 logger.info(f"SKIP: {signal['symbol']} — already traded this cycle")
                 trades_blocked += 1
                 continue
+
+            # Stop-loss cooldown: don't re-enter same symbol after recent SL hit
+            sl_time_str = self._stoploss_cooldowns.get(signal["symbol"])
+            if sl_time_str:
+                sl_elapsed = (datetime.utcnow() - datetime.fromisoformat(sl_time_str)).total_seconds()
+                if sl_elapsed < self._stoploss_cooldown_seconds:
+                    logger.info(
+                        f"SKIP: {signal['symbol']} — stop-loss cooldown "
+                        f"{sl_elapsed:.0f}s < {self._stoploss_cooldown_seconds}s"
+                    )
+                    trades_blocked += 1
+                    continue
+                else:
+                    del self._stoploss_cooldowns[signal["symbol"]]
 
             # Cross-cycle cooldown: don't re-enter same symbol too soon
             recent = self._recent_trades.get(signal["symbol"])

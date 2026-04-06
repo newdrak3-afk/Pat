@@ -90,24 +90,41 @@ class OptionsScanner:
     SWING: Looks for pullback continuation with strong HTF trend.
     """
 
-    def __init__(self, broker: AlpacaBroker):
+    def __init__(self, broker: AlpacaBroker, controlled_start: bool = True):
         self.broker = broker
         self.contract_selector = ContractSelector()
         self.news = NewsReader()
+        # Controlled start: only scan SPY/QQQ until first successful trade
+        self._controlled_start = controlled_start
+        self._diagnostics: list[dict] = []
 
     def scan_all(self) -> list[dict]:
-        """Scan all symbols across all tiers, return sorted signals."""
+        """Scan all symbols across all tiers, return sorted signals.
+
+        Controlled start mode: When _controlled_start is True, only scan
+        TIER1 symbols (SPY, QQQ, IWM, DIA) to prove the pipeline works
+        before expanding to the full universe.
+        """
         signals = []
         scan_log = []
-        total_symbols = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
+        # Diagnostic pipeline: track where each symbol dies
+        self._diagnostics: list[dict] = []
 
-        logger.info(f"OPTIONS SCAN: scanning {total_symbols} symbols ({len(TIER1_SYMBOLS)} T1 + {len(TIER2_SYMBOLS)} T2 + {len(TIER3_SYMBOLS)} T3)")
+        if self._controlled_start:
+            scan_symbols = [(s, 1) for s in TIER1_SYMBOLS[:2]]  # SPY + QQQ only
+            logger.info(f"OPTIONS SCAN [CONTROLLED]: scanning {len(scan_symbols)} symbols (SPY, QQQ only)")
+        else:
+            scan_symbols = (
+                [(s, 1) for s in TIER1_SYMBOLS] +
+                [(s, 2) for s in TIER2_SYMBOLS] +
+                [(s, 3) for s in TIER3_SYMBOLS]
+            )
+            logger.info(f"OPTIONS SCAN: scanning {len(scan_symbols)} symbols")
 
-        # Tier 1: Index ETFs (SPY, QQQ, IWM, DIA)
-        for symbol in TIER1_SYMBOLS:
+        for symbol, tier in scan_symbols:
             for mode in ["momentum", "swing"]:
                 try:
-                    signal = self._analyze_symbol(symbol, mode, tier=1)
+                    signal = self._analyze_symbol(symbol, mode, tier=tier)
                     if signal:
                         signals.append(signal)
                         scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
@@ -115,41 +132,32 @@ class OptionsScanner:
                         scan_log.append(f"  {symbol} {mode}: no setup")
                 except Exception as e:
                     scan_log.append(f"  {symbol} {mode}: ERROR {e}")
-                    logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
-
-        # Tier 2: Mega-cap tech
-        for symbol in TIER2_SYMBOLS:
-            for mode in ["momentum", "swing"]:
-                try:
-                    signal = self._analyze_symbol(symbol, mode, tier=2)
-                    if signal:
-                        signals.append(signal)
-                        scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
-                    else:
-                        scan_log.append(f"  {symbol} {mode}: no setup")
-                except Exception as e:
-                    scan_log.append(f"  {symbol} {mode}: ERROR {e}")
-                    logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
-
-        # Tier 3: Other high-volume stocks + sector ETFs
-        for symbol in TIER3_SYMBOLS:
-            for mode in ["momentum", "swing"]:
-                try:
-                    signal = self._analyze_symbol(symbol, mode, tier=3)
-                    if signal:
-                        signals.append(signal)
-                        scan_log.append(f"  {symbol} {mode}: SIGNAL conf={signal['confidence']:.2f}")
-                    else:
-                        scan_log.append(f"  {symbol} {mode}: no setup")
-                except Exception as e:
-                    scan_log.append(f"  {symbol} {mode}: ERROR {e}")
+                    self._diagnostics.append({
+                        "symbol": symbol, "mode": mode,
+                        "terminal_stage": "exception",
+                        "detail": str(e)[:120],
+                    })
                     logger.warning(f"Options scan error {symbol} {mode}: {e}", exc_info=True)
 
         logger.info(f"OPTIONS SCAN RESULTS:\n" + "\n".join(scan_log))
-        logger.info(f"OPTIONS: {len(signals)} signals found from {total_symbols} symbols")
+        logger.info(f"OPTIONS: {len(signals)} signals found from {len(scan_symbols)} symbols")
 
         signals.sort(key=lambda x: x["confidence"], reverse=True)
         return signals
+
+    def get_diagnostics_summary(self) -> str:
+        """Return human-readable diagnostic summary for Telegram."""
+        if not self._diagnostics:
+            return "No diagnostic data (run a scan first)."
+
+        lines = ["OPTIONS PIPELINE DIAGNOSTICS\n"]
+        for d in self._diagnostics:
+            lines.append(
+                f"{d['symbol']} {d['mode']}:\n"
+                f"  died at: {d['terminal_stage']}\n"
+                f"  reason: {d.get('detail', 'n/a')}\n"
+            )
+        return "\n".join(lines)
 
     def _analyze_symbol(self, symbol: str, mode: str, tier: int) -> Optional[dict]:
         """Analyze one symbol for one mode. Returns signal dict or None."""
@@ -170,11 +178,16 @@ class OptionsScanner:
         candles_m15 = candles_m15_raw[:-1] if len(candles_m15_raw) > 1 else candles_m15_raw
 
         if len(candles_h1) < 10 or len(candles_d1) < 5:
-            logger.info(
-                f"REJECT {symbol} {mode}: Insufficient bars — "
+            detail = (
                 f"D1:{len(candles_d1)} H4:{len(candles_h4)} H1:{len(candles_h1)} "
                 f"(need D1:5 H1:10)"
             )
+            logger.info(f"REJECT {symbol} {mode}: Insufficient bars — {detail}")
+            self._diagnostics.append({
+                "symbol": symbol, "mode": mode,
+                "terminal_stage": "bars_fetch",
+                "detail": detail,
+            })
             return None
 
         # Extract arrays
@@ -230,6 +243,11 @@ class OptionsScanner:
                 logger.info(f"{symbol} {mode}: All TFs flat — using H1 momentum direction={direction}")
             else:
                 logger.info(f"REJECT {symbol} {mode}: All TFs flat with no momentum")
+                self._diagnostics.append({
+                    "symbol": symbol, "mode": mode,
+                    "terminal_stage": "trend_detection",
+                    "detail": "All TFs flat, no momentum",
+                })
                 return None
 
         # ─── INDICATORS ───
@@ -333,25 +351,40 @@ class OptionsScanner:
         quote = self.broker.get_quote(symbol)
         if not quote:
             logger.info(f"REJECT {symbol} {mode}: No quote available")
+            self._diagnostics.append({
+                "symbol": symbol, "mode": mode,
+                "terminal_stage": "stock_quote",
+                "detail": "get_quote returned None",
+            })
             return None
 
         current_price = quote.mid
 
         # Adjust contract selector for mode — widened DTE ranges for practice
         if mode == "momentum":
-            self.contract_selector.min_dte = 3
-            self.contract_selector.max_dte = 14
+            self.contract_selector.min_dte = 1
+            self.contract_selector.max_dte = 21
         else:
-            self.contract_selector.min_dte = 7
-            self.contract_selector.max_dte = 30
+            self.contract_selector.min_dte = 3
+            self.contract_selector.max_dte = 45
 
         try:
             chain = self.broker.get_options_chain(symbol)
             if not chain:
                 logger.info(f"REJECT {symbol} {mode}: Options chain empty")
+                self._diagnostics.append({
+                    "symbol": symbol, "mode": mode,
+                    "terminal_stage": "chain_fetch",
+                    "detail": "get_options_chain returned empty",
+                })
                 return None
         except Exception as e:
             logger.info(f"REJECT {symbol} {mode}: Options chain error: {e}")
+            self._diagnostics.append({
+                "symbol": symbol, "mode": mode,
+                "terminal_stage": "chain_fetch",
+                "detail": f"exception: {str(e)[:80]}",
+            })
             return None
 
         contract = self.contract_selector.select_contract(
@@ -367,6 +400,13 @@ class OptionsScanner:
                 f"DTE range {self.contract_selector.min_dte}-{self.contract_selector.max_dte}, "
                 f"price=${current_price:.2f}"
             )
+            self._diagnostics.append({
+                "symbol": symbol, "mode": mode,
+                "terminal_stage": "contract_filter",
+                "detail": f"chain={len(chain)} contracts, all filtered out "
+                          f"(DTE {self.contract_selector.min_dte}-{self.contract_selector.max_dte}, "
+                          f"price=${current_price:.2f})",
+            })
             return None
 
         # ─── SCORE ───
@@ -409,11 +449,19 @@ class OptionsScanner:
             threshold += TIER3_CONFIDENCE_BONUS
 
         if result.confidence < threshold:
+            score_str = " | ".join(f"{k}={v:.2f}" for k, v in result.scores.items())
             logger.info(
                 f"OPTIONS REJECT: {symbol} {mode.upper()} {direction} "
                 f"conf={result.confidence:.2f}<{threshold:.2f} | "
+                f"scores: {score_str} | "
                 f"{'  '.join(result.reasons[:3])}"
             )
+            self._diagnostics.append({
+                "symbol": symbol, "mode": mode,
+                "terminal_stage": "confidence",
+                "detail": f"conf={result.confidence:.2f} < threshold={threshold:.2f} "
+                          f"({score_str})",
+            })
             return None
 
         option_type = "CALL" if direction == "buy" else "PUT"

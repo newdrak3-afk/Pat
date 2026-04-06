@@ -102,7 +102,7 @@ class PositionManager:
 
         Returns stats dict with keys: closed, wins, losses, pnl
         """
-        result = {"closed": 0, "wins": 0, "losses": 0, "pnl": 0.0}
+        result = {"closed": 0, "wins": 0, "losses": 0, "pnl": 0.0, "closed_symbols_loss": []}
 
         if not self.open_trades or not self.oanda:
             return result
@@ -124,6 +124,7 @@ class PositionManager:
                 result["wins"] += 1
             else:
                 result["losses"] += 1
+                result["closed_symbols_loss"].append(info["symbol"])
 
         for tid in closed_ids:
             del self.open_trades[tid]

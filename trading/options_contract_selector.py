@@ -56,10 +56,10 @@ class ContractSelector:
 
     def __init__(
         self,
-        min_dte: int = 10,
-        max_dte: int = 21,
-        max_spread_pct: float = 0.25,
-        min_open_interest: int = 10,
+        min_dte: int = 1,
+        max_dte: int = 45,
+        max_spread_pct: float = 0.40,
+        min_open_interest: int = 1,
         min_volume: int = 1,
         max_premium: float = 500.0,
     ):

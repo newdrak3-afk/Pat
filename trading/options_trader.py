@@ -184,10 +184,42 @@ class OptionsTrader:
         # Scan for new signals
         logger.info("OPTIONS: Starting scan...")
         from trading.options_scanner import TIER1_SYMBOLS, TIER2_SYMBOLS, TIER3_SYMBOLS
-        total_symbols = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
+
+        if self.scanner._controlled_start:
+            total_symbols = min(2, len(TIER1_SYMBOLS))
+        else:
+            total_symbols = len(TIER1_SYMBOLS) + len(TIER2_SYMBOLS) + len(TIER3_SYMBOLS)
 
         signals = self.scanner.scan_all()
         logger.info(f"OPTIONS: Scan returned {len(signals)} signals")
+
+        # Send diagnostic summary every cycle so we can see where the pipeline dies
+        diag_lines = [f"OPTIONS OPEN CHECK (cycle #{self._stats['cycles']})"]
+        diag_lines.append(f"Symbols scanned: {total_symbols}")
+        diag_lines.append(f"Signals found: {len(signals)}")
+        if signals:
+            for s in signals[:3]:
+                c = s["contract"]
+                diag_lines.append(
+                    f"\n{s['symbol']} {s['mode'].upper()} {s['side'].upper()}:"
+                    f"\n  contract: {c.option_type.upper()} ${c.strike} {c.expiration} ({c.dte}DTE)"
+                    f"\n  premium: ${c.mid:.2f} | spread: {c.spread_pct:.1%} | OI: {c.open_interest}"
+                    f"\n  confidence: {s['confidence']:.2f}"
+                    f"\n  action: WOULD {'BUY' if self.auto_trading_enabled else 'ALERT ONLY'}"
+                )
+        # Show where rejected symbols died
+        if hasattr(self.scanner, '_diagnostics') and self.scanner._diagnostics:
+            diag_lines.append(f"\nRejections ({len(self.scanner._diagnostics)}):")
+            # Group by terminal stage
+            from collections import Counter
+            stage_counts = Counter(d["terminal_stage"] for d in self.scanner._diagnostics)
+            for stage, count in stage_counts.most_common():
+                diag_lines.append(f"  {stage}: {count}")
+            # Show first 5 individual rejections
+            for d in self.scanner._diagnostics[:5]:
+                diag_lines.append(f"  {d['symbol']} {d['mode']}: {d['terminal_stage']} — {d['detail'][:80]}")
+
+        self.notifier.send_system_alert("\n".join(diag_lines))
 
         trades_placed = 0
         trades_blocked = 0
@@ -215,7 +247,9 @@ class OptionsTrader:
             )
             return
 
-        for signal in signals[:3]:
+        # Controlled start: max 1 trade until pipeline is proven
+        max_signals = 1 if self.scanner._controlled_start else 3
+        for signal in signals[:max_signals]:
             if len(self.open_trades) >= self.max_open_positions:
                 trades_blocked += 1
                 self.notifier.send_system_alert(
