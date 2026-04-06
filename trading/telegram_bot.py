@@ -208,6 +208,7 @@ class TelegramBot:
             "/optiontrade": self._cmd_optiontrade,
             "/optionpositions": self._cmd_optionpositions,
             "/optionrisk": self._cmd_optionrisk,
+            "/forcetrade": self._cmd_forcetrade,
             "/heartbeat": self._cmd_heartbeat,
         }
 
@@ -781,6 +782,110 @@ class TelegramBot:
         lines.append(f"Options trades: {self._options_trader._stats.get('total_trades', 0)}")
 
         self._send("\n".join(lines))
+
+    def _cmd_forcetrade(self, args):
+        """Force a test options trade — buy 1 near-ATM SPY call, bypass all scanning."""
+        if not self._options_trader:
+            self._send("Options trader not loaded.")
+            return
+
+        broker = self._options_trader.broker
+        if not broker.connected:
+            if not broker.connect():
+                self._send("Alpaca connection failed.")
+                return
+
+        symbol = args[0].upper() if args else "SPY"
+        self._send(f"FORCE TRADE: Attempting 1 near-ATM call on {symbol}...")
+
+        try:
+            # Get quote
+            quote = broker.get_quote(symbol)
+            if not quote:
+                self._send(f"FAILED: No quote for {symbol}")
+                return
+            price = quote.mid
+            self._send(f"{symbol} price: ${price:.2f}")
+
+            # Get chain
+            chain = broker.get_options_chain(symbol)
+            if not chain:
+                self._send(f"FAILED: Options chain empty for {symbol}")
+                return
+            self._send(f"Chain: {len(chain)} contracts")
+
+            # Find a near-ATM call with any bid/ask
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc).date()
+            best = None
+            best_score = float("inf")
+
+            for c in chain:
+                if (c.option_type or "").lower() != "call":
+                    continue
+                if c.bid <= 0 and c.ask <= 0:
+                    continue
+                try:
+                    exp = datetime.strptime(c.expiration, "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    continue
+                dte = (exp - now).days
+                if dte < 1 or dte > 30:
+                    continue
+                mid = (c.bid + c.ask) / 2
+                if mid <= 0 or mid * 100 > 1500:
+                    continue
+                # Score by ATM proximity
+                dist = abs(c.strike - price)
+                if dist < best_score:
+                    best_score = dist
+                    best = (c, dte, mid)
+
+            if not best:
+                self._send(
+                    f"FAILED: No valid call found.\n"
+                    f"Chain had {len(chain)} contracts.\n"
+                    f"Checked: calls with bid>0, DTE 1-30, premium<$1500"
+                )
+                return
+
+            contract, dte, mid = best
+            self._send(
+                f"SELECTED: {contract.symbol}\n"
+                f"Strike: ${contract.strike} | {dte} DTE\n"
+                f"Bid: ${contract.bid:.2f} Ask: ${contract.ask:.2f} Mid: ${mid:.2f}\n"
+                f"OI: {contract.open_interest}\n"
+                f"Max loss: ${mid * 100:.0f}\n"
+                f"Placing limit order at ${mid:.2f}..."
+            )
+
+            # Place the order
+            result = broker.place_option_order(
+                option_symbol=contract.symbol,
+                side="buy",
+                quantity=1,
+                order_type="limit",
+                limit_price=mid,
+            )
+
+            if result and result.success:
+                self._send(
+                    f"ORDER PLACED!\n"
+                    f"Order ID: {result.order_id}\n"
+                    f"Status: {result.status}\n"
+                    f"Symbol: {contract.symbol}\n"
+                    f"Price: ${result.price:.2f}" if result.price else
+                    f"ORDER PLACED!\n"
+                    f"Order ID: {result.order_id}\n"
+                    f"Status: {result.status}\n"
+                    f"Symbol: {contract.symbol}"
+                )
+            else:
+                msg = result.message if result else "No response"
+                self._send(f"ORDER FAILED: {msg}")
+
+        except Exception as e:
+            self._send(f"FORCE TRADE ERROR: {str(e)[:300]}")
 
     def _cmd_optionscan(self, args):
         """Toggle options scanning or force a scan now."""
