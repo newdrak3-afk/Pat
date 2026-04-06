@@ -94,7 +94,7 @@ class ContractSelector:
 
         for c in contracts:
             # Filter by type
-            if c.option_type != option_type:
+            if (c.option_type or "").lower() != option_type.lower():
                 reject_counts["type"] += 1
                 continue
 
