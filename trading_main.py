@@ -223,9 +223,19 @@ def cmd_auto(orch: Orchestrator):
     trader = AutoTrader(orch.config)
 
     # Start options trader in background if Alpaca is configured
-    if os.getenv("ALPACA_API_KEY"):
+    alpaca_key = os.getenv("ALPACA_API_KEY", "")
+    alpaca_secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if alpaca_key:
         from trading.options_trader import OptionsTrader
         import time as _time
+
+        logger_main = logging.getLogger(__name__)
+        logger_main.info(f"Alpaca key found: {alpaca_key[:8]}... secret={'YES' if alpaca_secret else 'MISSING'}")
+        trader.notifier.send_system_alert(
+            f"OPTIONS INIT: Alpaca key found ({alpaca_key[:8]}...)\n"
+            f"Secret: {'set' if alpaca_secret else 'MISSING!'}\n"
+            f"Starting options thread..."
+        )
 
         options = OptionsTrader(orch.config)
         # Wire options trader into telegram bot AND auto trader for /status
@@ -260,6 +270,10 @@ def cmd_auto(orch: Orchestrator):
         print("Options trader started (Alpaca) with auto-restart")
     else:
         print("Options: disabled (no ALPACA_API_KEY)")
+        trader.notifier.send_system_alert(
+            "OPTIONS DISABLED: No ALPACA_API_KEY env var found.\n"
+            "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in Railway to enable options."
+        )
 
     print(trader.get_status())
     trader.start(scan_interval=orch.config.scan_interval_seconds)
