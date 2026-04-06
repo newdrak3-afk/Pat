@@ -51,7 +51,7 @@ class OptionsTrader:
         self.notifier = TelegramNotifier(self.config)
 
         # Risk limits
-        self.max_premium_per_trade = 500.0
+        self.max_premium_per_trade = 1500.0
         self.max_open_positions = 5
         self.auto_trading_enabled = True  # Toggle via Telegram
         self.scanning_enabled = True      # Toggle via Telegram

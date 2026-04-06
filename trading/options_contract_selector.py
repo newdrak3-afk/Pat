@@ -61,7 +61,7 @@ class ContractSelector:
         max_spread_pct: float = 0.40,
         min_open_interest: int = 1,
         min_volume: int = 1,
-        max_premium: float = 500.0,
+        max_premium: float = 1500.0,
     ):
         self.min_dte = min_dte
         self.max_dte = max_dte
@@ -150,6 +150,8 @@ class ContractSelector:
             })
 
         if not candidates:
+            # Store rejection breakdown so scanner can include in diagnostics
+            self._last_reject_counts = reject_counts
             logger.info(
                 f"No valid {option_type} contracts for {underlying} | "
                 f"Total: {len(contracts)} | Filtered: "
@@ -157,7 +159,8 @@ class ContractSelector:
                 f"oi={reject_counts['oi']} bid_ask={reject_counts['bid_ask']} "
                 f"spread={reject_counts['spread']} premium={reject_counts['premium']} | "
                 f"DTE range: {self.min_dte}-{self.max_dte} | "
-                f"Min OI: {self.min_open_interest} | Max spread: {self.max_spread_pct:.0%}"
+                f"Min OI: {self.min_open_interest} | Max spread: {self.max_spread_pct:.0%} | "
+                f"Max premium: ${self.max_premium}"
             )
             return None
 

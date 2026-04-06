@@ -394,16 +394,19 @@ class OptionsScanner:
             contracts=chain,
         )
         if not contract:
+            # Get rejection breakdown from selector
+            rc = getattr(self.contract_selector, '_last_reject_counts', {})
+            rc_str = " ".join(f"{k}={v}" for k, v in rc.items() if v > 0) if rc else "unknown"
             logger.info(
                 f"REJECT {symbol} {mode}: No valid contract — "
                 f"chain had {len(chain)} contracts, "
                 f"DTE range {self.contract_selector.min_dte}-{self.contract_selector.max_dte}, "
-                f"price=${current_price:.2f}"
+                f"price=${current_price:.2f} | filters: {rc_str}"
             )
             self._diagnostics.append({
                 "symbol": symbol, "mode": mode,
                 "terminal_stage": "contract_filter",
-                "detail": f"chain={len(chain)} contracts, all filtered out "
+                "detail": f"chain={len(chain)}, filters: {rc_str} "
                           f"(DTE {self.contract_selector.min_dte}-{self.contract_selector.max_dte}, "
                           f"price=${current_price:.2f})",
             })
