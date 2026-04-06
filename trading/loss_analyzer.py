@@ -68,6 +68,14 @@ FAILURE_CATEGORIES = {
         "description": "Market regime changed, model predictions drifted",
         "default_rule": "Trigger model retrain with recent data weighted higher",
     },
+    "cause_uncertain": {
+        "description": "Insufficient evidence to determine root cause",
+        "default_rule": "Flag for manual review",
+    },
+    "oversized_position": {
+        "description": "Position size was too large relative to account",
+        "default_rule": "Review sizing logic",
+    },
     "unknown": {
         "description": "Root cause unclear",
         "default_rule": "Flag for manual review",
@@ -211,37 +219,44 @@ class LossAnalyzer:
         return "unknown"
 
     def _categorize_forex_loss(self, trade: Trade, prediction: Prediction) -> str:
-        """Categorize a forex trading loss using trade metadata.
+        """Categorize a forex trading loss using actual trade evidence.
 
-        Uses actual trade context (spread, regime, session) when available,
-        not just confidence bands. Falls back to confidence-based buckets
-        only when richer metadata is missing.
+        Priority order: check measurable facts first, then patterns,
+        then fall back to cause_uncertain. Never guess model_drift
+        from confidence alone — that's not causal evidence.
         """
-        confidence = prediction.confidence if prediction else 0
+        pnl = abs(trade.pnl) if trade.pnl else 0
+        amount = trade.amount if trade.amount else 1
+        units = getattr(trade, "units", 0) or amount
 
-        # Check for spread slippage (if trade metadata has spread info)
+        # 1. Oversized position: loss > 5% of trade amount suggests sizing failure
+        if pnl > 0 and amount > 0 and pnl > amount * 0.05:
+            return "oversized_position"
+
+        # 2. Spread slippage (if trade metadata has spread info)
         spread_pips = getattr(trade, "spread_pips", None)
         if spread_pips and spread_pips > 3.0:
             return "spread_slippage"
 
-        # Check for correlated losses (multiple same-direction losses recently)
+        # 3. Correlated losses (same pair losing repeatedly)
         same_pair_losses = sum(
             1 for l in self._lessons
             if l.get("market_id") == trade.market_id
-            and l.get("category") in ("sentiment_mismatch", "model_drift")
         )
         if same_pair_losses >= 2:
             return "correlated_loss"
 
-        # Confidence-based fallback (less specific)
-        if confidence > 0.7:
+        # 4. Overconfidence: only if confidence was very high (>0.80)
+        confidence = prediction.confidence if prediction else 0
+        if confidence > 0.80:
             return "overconfidence"
-        if confidence > 0.5:
-            return "model_drift"
-        if confidence < 0.45:
+
+        # 5. Late entry: very low confidence suggests weak signal
+        if confidence < 0.40:
             return "late_entry"
 
-        return "sentiment_mismatch"
+        # 6. Default: we don't have enough evidence to diagnose
+        return "cause_uncertain"
 
     def _llm_categorize(
         self,

@@ -472,6 +472,7 @@ class AutoTrader:
         max_trades = 10
         max_open = 10
 
+        symbols_traded_this_cycle = set()
         for signal in signals:
             approval = self.guard_engine.evaluate(
                 signal=signal,
@@ -528,6 +529,12 @@ class AutoTrader:
                 trades_blocked += 1
                 continue
 
+            # One trade per symbol per cycle — prevent duplicates
+            if signal["symbol"] in symbols_traded_this_cycle:
+                logger.info(f"SKIP: {signal['symbol']} — already traded this cycle")
+                trades_blocked += 1
+                continue
+
             # Execute the trade
             result = self.oanda.place_order_with_stops(
                 symbol=signal["symbol"],
@@ -564,6 +571,7 @@ class AutoTrader:
 
                 # Register with position manager (handles DB, portfolio, etc)
                 self.position_mgr.add_trade(trade_info)
+                symbols_traded_this_cycle.add(signal["symbol"])
 
                 self._stats["total_trades"] += 1
                 trades_placed += 1

@@ -129,6 +129,25 @@ def calc_units_from_risk(
     risk_amount = balance * risk_pct
     raw_units = risk_amount / loss_per_unit
 
+    # Hard cap: limit position value to 1x account balance in USD.
+    # For cross-currency pairs (JPY, CHF), tiny loss_per_unit can produce
+    # enormous unit counts that create outsized exposure.
+    if quote_ccy == "USD":
+        position_value_usd = raw_units * entry
+    else:
+        position_value_usd = raw_units * entry * fx_to_usd
+    max_position_value = balance * 1.0  # max 1x leverage
+    if position_value_usd > max_position_value:
+        old_units = raw_units
+        if quote_ccy == "USD":
+            raw_units = max_position_value / entry
+        else:
+            raw_units = max_position_value / (entry * fx_to_usd)
+        logger.warning(
+            f"SIZING CAP {symbol}: position ${position_value_usd:.0f} > "
+            f"balance ${balance:.0f}, capped {old_units:.0f} → {raw_units:.0f} units"
+        )
+
     # Normalize to OANDA limits
     abs_units = normalize_units(spec, raw_units)
     if abs_units == 0:
