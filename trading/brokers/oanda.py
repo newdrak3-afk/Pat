@@ -42,7 +42,7 @@ CRYPTO_PAIRS = [
 ]
 
 # All tradeable pairs
-ALL_PAIRS = FOREX_PAIRS + CRYPTO_PAIRS
+ALL_PAIRS = FOREX_PAIRS
 
 
 def normalize_units(spec: dict, units: float, existing_position_units: float = 0) -> float:
