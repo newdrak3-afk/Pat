@@ -750,3 +750,16 @@ class AutoTrader:
             pass
 
         return "\n".join(lines)
+self.last_trade_time = {}  # symbol -> timestamp
+now = time.time()
+cooldown = 1800  # 30 minutes
+
+last_time = self.last_trade_time.get(signal["symbol"], 0)
+if now - last_time < cooldown:
+    logger.info(f"SKIP: {signal['symbol']} — cooldown active")
+    continue
+      self.last_trade_time[signal["symbol"]] = now
+for trade in self.position_mgr.open_trades.values():
+    if trade["symbol"] == signal["symbol"] and trade["side"] == signal["side"]:
+        logger.info(f"SKIP: {signal['symbol']} — already in same direction")
+        continue
