@@ -148,10 +148,17 @@ def calc_units_from_risk(
             f"balance ${balance:.0f}, capped {old_units:.0f} → {raw_units:.0f} units"
         )
 
-    # Normalize to OANDA limits
+    # Normalize to OANDA limits (min/max/precision)
     abs_units = normalize_units(spec, raw_units)
     if abs_units == 0:
         return SizingResult(0, f"below_min_trade_size (min={spec['min_trade_size']})")
+
+    # Log sizing chain for debugging
+    logger.info(
+        f"SIZING {symbol}: risk=${risk_amount:.2f} loss_per_unit={loss_per_unit:.6f} "
+        f"raw={risk_amount/loss_per_unit:.0f} → notional_cap={raw_units:.0f} → "
+        f"broker_norm={abs_units:.0f} units"
+    )
 
     signed = abs_units if side.lower() == "buy" else -abs_units
     return SizingResult(signed, None)

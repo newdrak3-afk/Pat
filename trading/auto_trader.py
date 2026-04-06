@@ -132,6 +132,11 @@ class AutoTrader:
             "cycles": 0,
             "blocked_signals": 0,
         }
+
+        # Cross-cycle cooldown: {symbol: {"side": str, "entry": float, "time": datetime}}
+        self._recent_trades: dict[str, dict] = {}
+        self._trade_cooldown_seconds = 1800  # 30 min cooldown per symbol
+
         self._load_state()
 
     def _load_state(self):
@@ -535,6 +540,30 @@ class AutoTrader:
                 trades_blocked += 1
                 continue
 
+            # Cross-cycle cooldown: don't re-enter same symbol too soon
+            recent = self._recent_trades.get(signal["symbol"])
+            if recent:
+                elapsed = (datetime.utcnow() - datetime.fromisoformat(recent["time"])).total_seconds()
+                if elapsed < self._trade_cooldown_seconds:
+                    # Also check: same side + entry too close = likely duplicate signal
+                    same_side = recent["side"] == signal["side"]
+                    entry_diff = abs(signal["entry"] - recent["entry"])
+                    atr = signal.get("atr", 0)
+                    too_close = atr > 0 and entry_diff < 0.25 * atr
+
+                    if same_side and too_close:
+                        logger.info(
+                            f"SKIP: {signal['symbol']} — cooldown {elapsed:.0f}s < "
+                            f"{self._trade_cooldown_seconds}s, same side, entry too close"
+                        )
+                        trades_blocked += 1
+                        continue
+                    elif same_side:
+                        logger.info(
+                            f"COOLDOWN WARN: {signal['symbol']} — same side within "
+                            f"{elapsed:.0f}s but entry moved, allowing"
+                        )
+
             # Execute the trade
             result = self.oanda.place_order_with_stops(
                 symbol=signal["symbol"],
@@ -572,6 +601,13 @@ class AutoTrader:
                 # Register with position manager (handles DB, portfolio, etc)
                 self.position_mgr.add_trade(trade_info)
                 symbols_traded_this_cycle.add(signal["symbol"])
+
+                # Record for cross-cycle cooldown
+                self._recent_trades[signal["symbol"]] = {
+                    "side": signal["side"],
+                    "entry": result.price,
+                    "time": datetime.utcnow().isoformat(),
+                }
 
                 self._stats["total_trades"] += 1
                 trades_placed += 1
