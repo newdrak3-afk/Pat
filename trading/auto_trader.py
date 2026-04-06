@@ -49,6 +49,15 @@ from trading.session_awareness import tag_trade_session, get_current_session
 logger = logging.getLogger(__name__)
 
 
+def normalize_side(side: str) -> str:
+    """Normalize position side to buy/sell internally."""
+    if side in ("long", "buy"):
+        return "buy"
+    if side in ("short", "sell"):
+        return "sell"
+    return side
+
+
 class AutoTrader:
     """
     Fully automated trading loop.
@@ -128,9 +137,8 @@ class AutoTrader:
     def _load_state(self):
         """Load saved state with crash recovery.
 
-        On restart, reconciles saved open trades against broker positions
-        to avoid duplicate orders and drop stale entries.
-        If no state file exists (fresh deploy), syncs from broker directly.
+        Always reconciles open trades against broker positions (source of truth).
+        Stats are loaded from state file if available.
         """
         state_file = "trading/data/auto_trader_state.json"
         try:
@@ -138,33 +146,34 @@ class AutoTrader:
                 data = json.load(f)
                 saved_stats = data.get("stats", {})
                 self._stats.update(saved_stats)
-
-                saved_open = data.get("open_trades", {})
-                reconciled = self._reconcile_open_trades(saved_open)
-                self.position_mgr.open_trades = reconciled
         except (FileNotFoundError, json.JSONDecodeError):
-            # No state file (fresh deploy) — sync from broker
-            self._sync_from_broker()
+            pass
+
+        # Always rebuild open_trades from broker — broker is source of truth
+        self._sync_from_broker()
 
     def _sync_from_broker(self):
-        """Sync open trades from broker when no state file exists.
+        """Rebuild open trades from broker positions (source of truth).
 
-        This handles fresh deploys on Railway where the state file is wiped.
-        Queries the broker for all open positions and registers them so
-        the bot knows about existing trades and won't open duplicates.
+        Clears all stale in-memory state and rebuilds from what the broker
+        actually has open. This prevents stale trade accumulation across deploys.
         """
         try:
-            if not self.oanda.connect():
+            if not self.oanda.connected and not self.oanda.connect():
                 return
+
+            # Clear stale state — broker is the only source of truth
+            self.position_mgr.open_trades = {}
 
             broker_positions = self.oanda.get_positions()
             if not broker_positions:
+                logger.info("Broker sync: no open positions")
                 return
 
-            logger.info(f"Fresh deploy: syncing {len(broker_positions)} positions from broker")
+            logger.info(f"Broker sync: rebuilding from {len(broker_positions)} positions")
 
             for pos in broker_positions:
-                side = "buy" if pos.quantity > 0 else "sell"
+                side = normalize_side(pos.side)
                 trade_id = f"synced_{pos.symbol}_{side}"
                 trade_info = {
                     "trade_id": trade_id,
@@ -200,8 +209,10 @@ class AutoTrader:
                         pos.symbol, side, abs(pos.quantity), pos.entry_price
                     )
 
-            self._stats["total_trades"] = len(broker_positions)
-            logger.info(f"Synced {len(broker_positions)} positions from broker")
+            logger.info(
+                f"Broker sync complete: {len(broker_positions)} positions, "
+                f"open_trades={list(self.position_mgr.open_trades.keys())}"
+            )
             self._save_state()
 
         except Exception as e:
@@ -225,14 +236,23 @@ class AutoTrader:
             # startup_checks() will catch connectivity issues later.
             return saved_open
 
-        # Build a set of (symbol, side) tuples currently open on the broker
+        # Build a set of (symbol, normalized_side) tuples from broker
         broker_open = set()
         for pos in broker_positions:
-            broker_open.add((pos.symbol, pos.side))
+            broker_open.add((pos.symbol, normalize_side(pos.side)))
+
+        logger.info(
+            f"RECON: broker positions = "
+            f"{[(s, sd) for s, sd in broker_open]}"
+        )
+        logger.info(
+            f"RECON: stored trades (before) = "
+            f"{[(tid, t.get('symbol'), t.get('side')) for tid, t in saved_open.items()]}"
+        )
 
         reconciled: dict = {}
         for trade_id, info in saved_open.items():
-            key = (info.get("symbol"), info.get("side"))
+            key = (info.get("symbol"), normalize_side(info.get("side", "")))
             if key in broker_open:
                 reconciled[trade_id] = info
             else:
@@ -241,6 +261,11 @@ class AutoTrader:
                     f"({info.get('symbol')} {info.get('side')}) — "
                     "no matching broker position"
                 )
+
+        logger.info(
+            f"RECON: stored trades (after) = "
+            f"{[(tid, t.get('symbol'), t.get('side')) for tid, t in reconciled.items()]}"
+        )
 
         if len(reconciled) != len(saved_open):
             logger.info(
@@ -499,19 +524,6 @@ class AutoTrader:
                 logger.info(f"SKIP: {signal['symbol']} — position size is 0 units")
                 self.notifier.send_system_alert(
                     f"SKIP: {signal['symbol']} — guard approved but units=0 (insufficient balance?)"
-                )
-                trades_blocked += 1
-                continue
-
-            # Allow up to 2 positions per symbol; block 3rd+
-            same_symbol_count = sum(
-                1 for t in self.position_mgr.open_trades.values()
-                if t["symbol"] == signal["symbol"]
-            )
-            if same_symbol_count >= 2:
-                logger.info(f"SKIP: Already have {same_symbol_count} positions on {signal['symbol']}")
-                self.notifier.send_system_alert(
-                    f"SKIP: {signal['symbol']} — already have {same_symbol_count} open positions (max 2)"
                 )
                 trades_blocked += 1
                 continue

@@ -252,7 +252,16 @@ class PortfolioManager:
             return False, "balance must be positive"
 
         if symbol in self._positions:
-            return False, f"Position already open for {symbol}"
+            existing = self._positions[symbol]
+            if side != existing.side:
+                # Opposite direction — allow (netting)
+                pass
+            else:
+                # Same direction — allow accumulation but log it
+                logger.info(
+                    f"Allowing additional {side} on {symbol} "
+                    f"(existing: {existing.quantity:.0f} units)"
+                )
 
         # --- simulate adding the position ---
         # We need an entry_price to compute notional; use 1.0 as placeholder
