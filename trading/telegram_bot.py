@@ -796,7 +796,7 @@ class TelegramBot:
                 return
 
         symbol = args[0].upper() if args else "SPY"
-        self._send(f"FORCE TRADE: Attempting 1 near-ATM call on {symbol}...")
+        self._send(f"FORCE TRADE: 1 near-ATM call on {symbol}...")
 
         try:
             # Get quote
@@ -812,18 +812,59 @@ class TelegramBot:
             if not chain:
                 self._send(f"FAILED: Options chain empty for {symbol}")
                 return
-            self._send(f"Chain: {len(chain)} contracts")
+
+            # Debug: count what's in the chain
+            calls = 0
+            puts = 0
+            no_type = 0
+            has_quotes = 0
+            types_seen = set()
+            for c in chain:
+                t = (c.option_type or "").lower()
+                types_seen.add(c.option_type or "EMPTY")
+                if t == "call":
+                    calls += 1
+                elif t == "put":
+                    puts += 1
+                else:
+                    no_type += 1
+                if c.bid > 0 or c.ask > 0:
+                    has_quotes += 1
+
+            self._send(
+                f"Chain: {len(chain)} total\n"
+                f"Calls: {calls} | Puts: {puts} | Unknown: {no_type}\n"
+                f"With quotes (bid/ask>0): {has_quotes}\n"
+                f"Types seen: {types_seen}"
+            )
+
+            if calls == 0:
+                # Try market order on ANY contract as last resort
+                self._send("No calls found. Showing first 5 raw contracts...")
+                for c in chain[:5]:
+                    self._send(
+                        f"  {c.symbol} type={c.option_type} "
+                        f"strike={c.strike} exp={c.expiration} "
+                        f"bid={c.bid} ask={c.ask} OI={c.open_interest}"
+                    )
+                return
 
             # Find a near-ATM call with any bid/ask
-            from datetime import datetime, timezone, timedelta
+            from datetime import datetime, timezone
             now = datetime.now(timezone.utc).date()
             best = None
             best_score = float("inf")
+            checked = 0
+            skipped_quote = 0
+            skipped_dte = 0
+            skipped_premium = 0
 
             for c in chain:
                 if (c.option_type or "").lower() != "call":
                     continue
+                checked += 1
                 if c.bid <= 0 and c.ask <= 0:
+                    skipped_quote += 1
                     continue
                 try:
                     exp = datetime.strptime(c.expiration, "%Y-%m-%d").date()
@@ -831,11 +872,12 @@ class TelegramBot:
                     continue
                 dte = (exp - now).days
                 if dte < 1 or dte > 30:
+                    skipped_dte += 1
                     continue
                 mid = (c.bid + c.ask) / 2
                 if mid <= 0 or mid * 100 > 1500:
+                    skipped_premium += 1
                     continue
-                # Score by ATM proximity
                 dist = abs(c.strike - price)
                 if dist < best_score:
                     best_score = dist
@@ -843,10 +885,21 @@ class TelegramBot:
 
             if not best:
                 self._send(
-                    f"FAILED: No valid call found.\n"
-                    f"Chain had {len(chain)} contracts.\n"
-                    f"Checked: calls with bid>0, DTE 1-30, premium<$1500"
+                    f"NO VALID CALL FOUND\n"
+                    f"Calls checked: {checked}\n"
+                    f"Skipped (no quote): {skipped_quote}\n"
+                    f"Skipped (DTE): {skipped_dte}\n"
+                    f"Skipped (premium): {skipped_premium}\n"
+                    f"Showing first 3 calls..."
                 )
+                shown = 0
+                for c in chain:
+                    if (c.option_type or "").lower() == "call" and shown < 3:
+                        self._send(
+                            f"  {c.symbol} strike=${c.strike} "
+                            f"exp={c.expiration} bid={c.bid} ask={c.ask}"
+                        )
+                        shown += 1
                 return
 
             contract, dte, mid = best
@@ -856,7 +909,7 @@ class TelegramBot:
                 f"Bid: ${contract.bid:.2f} Ask: ${contract.ask:.2f} Mid: ${mid:.2f}\n"
                 f"OI: {contract.open_interest}\n"
                 f"Max loss: ${mid * 100:.0f}\n"
-                f"Placing limit order at ${mid:.2f}..."
+                f"Placing limit order..."
             )
 
             # Place the order
@@ -869,23 +922,22 @@ class TelegramBot:
             )
 
             if result and result.success:
+                fill_price = f"${result.price:.2f}" if result.price else "pending"
                 self._send(
                     f"ORDER PLACED!\n"
-                    f"Order ID: {result.order_id}\n"
+                    f"ID: {result.order_id}\n"
                     f"Status: {result.status}\n"
-                    f"Symbol: {contract.symbol}\n"
-                    f"Price: ${result.price:.2f}" if result.price else
-                    f"ORDER PLACED!\n"
-                    f"Order ID: {result.order_id}\n"
-                    f"Status: {result.status}\n"
-                    f"Symbol: {contract.symbol}"
+                    f"Fill: {fill_price}"
                 )
+            elif result:
+                self._send(f"ORDER FAILED: {result.message}")
             else:
-                msg = result.message if result else "No response"
-                self._send(f"ORDER FAILED: {msg}")
+                self._send("ORDER FAILED: No response from Alpaca")
 
         except Exception as e:
-            self._send(f"FORCE TRADE ERROR: {str(e)[:300]}")
+            import traceback
+            tb = traceback.format_exc()
+            self._send(f"FORCE TRADE ERROR:\n{str(e)[:200]}\n\n{tb[-300:]}")
 
     def _cmd_optionscan(self, args):
         """Toggle options scanning or force a scan now."""
