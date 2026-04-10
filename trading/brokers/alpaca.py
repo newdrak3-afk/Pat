@@ -271,29 +271,81 @@ class AlpacaBroker(BaseBroker):
         return []
 
     def _get_chain_via_snapshots(self, symbol: str) -> list[OptionQuote]:
-        """Try the snapshots endpoint for full chain data with greeks."""
-        try:
-            resp = requests.get(
-                f"{self.data_url}/v1beta1/options/snapshots/{symbol}",
-                headers=self._headers,
-                params={"feed": "indicative", "limit": 100},
-                timeout=15,
-            )
-            if not resp.ok:
-                logger.debug(f"Snapshots endpoint failed for {symbol}: {resp.status_code}")
-                return []
+        """Try the snapshots endpoint for full chain data with greeks.
 
-            snapshots = resp.json().get("snapshots", {})
-            if not snapshots:
+        Uses expiration date range (tomorrow → +45d) and paginates
+        to avoid getting stuck on 100 0DTE contracts only.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        try:
+            # Avoid 0DTE — start from tomorrow, go out 45 days
+            today = datetime.now(timezone.utc).date()
+            exp_gte = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+            exp_lte = (today + timedelta(days=45)).strftime("%Y-%m-%d")
+
+            # Try to narrow strikes around current price
+            strike_lo = 0.0
+            strike_hi = 1e9
+            try:
+                q = self.get_quote(symbol)
+                if q and q.mid > 0:
+                    strike_lo = q.mid * 0.85
+                    strike_hi = q.mid * 1.15
+            except Exception:
+                pass
+
+            all_snapshots: dict = {}
+            page_token = None
+            pages = 0
+            max_pages = 6  # up to 600 contracts
+
+            while pages < max_pages:
+                params = {
+                    "feed": "indicative",
+                    "limit": 100,
+                    "expiration_date_gte": exp_gte,
+                    "expiration_date_lte": exp_lte,
+                }
+                if strike_lo > 0:
+                    params["strike_price_gte"] = f"{strike_lo:.2f}"
+                    params["strike_price_lte"] = f"{strike_hi:.2f}"
+                if page_token:
+                    params["page_token"] = page_token
+
+                resp = requests.get(
+                    f"{self.data_url}/v1beta1/options/snapshots/{symbol}",
+                    headers=self._headers,
+                    params=params,
+                    timeout=15,
+                )
+                if not resp.ok:
+                    logger.debug(
+                        f"Snapshots endpoint failed for {symbol}: "
+                        f"{resp.status_code} {resp.text[:200]}"
+                    )
+                    break
+
+                data = resp.json()
+                page_snapshots = data.get("snapshots", {}) or {}
+                if not page_snapshots:
+                    break
+
+                all_snapshots.update(page_snapshots)
+                pages += 1
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+
+            if not all_snapshots:
                 logger.debug(f"Snapshots empty for {symbol}")
                 return []
 
             options = []
-            for sym, snap in snapshots.items():
+            for sym, snap in all_snapshots.items():
                 try:
                     quote = snap.get("latestQuote", {})
                     trade = snap.get("latestTrade", {})
-                    greeks = snap.get("greeks", {})
 
                     bid = float(quote.get("bp", 0) or 0)
                     ask = float(quote.get("ap", 0) or 0)
@@ -310,11 +362,10 @@ class AlpacaBroker(BaseBroker):
                     strike, expiry, opt_type, oi = 0.0, "", "", 0
                     if len(sym) > 6:
                         try:
-                            # Extract from symbol pattern
                             root_end = next(i for i, c in enumerate(sym) if c.isdigit())
-                            date_str = sym[root_end:root_end+6]
-                            opt_type_char = sym[root_end+6]
-                            strike_str = sym[root_end+7:]
+                            date_str = sym[root_end:root_end + 6]
+                            opt_type_char = sym[root_end + 6]
+                            strike_str = sym[root_end + 7:]
                             expiry = f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
                             opt_type = "call" if opt_type_char == "C" else "put"
                             strike = float(strike_str) / 1000
@@ -336,6 +387,10 @@ class AlpacaBroker(BaseBroker):
                 except Exception as e:
                     logger.debug(f"Snapshot parse error {sym}: {e}")
 
+            logger.info(
+                f"Snapshots for {symbol}: {len(options)} contracts "
+                f"(pages={pages}, range {exp_gte}→{exp_lte})"
+            )
             return options
         except requests.RequestException as e:
             logger.debug(f"Snapshots request error for {symbol}: {e}")
@@ -345,12 +400,28 @@ class AlpacaBroker(BaseBroker):
         self, symbol: str, expiration_date: str = None, option_type: str = None
     ) -> list[OptionQuote]:
         """Fetch contracts from trading API, then try to get quotes."""
+        from datetime import datetime, timedelta, timezone
+
         try:
             params = {"underlying_symbols": symbol, "limit": 100, "status": "active"}
             if expiration_date:
                 params["expiration_date"] = expiration_date
+            else:
+                # Default: skip 0DTE, look out 45 days
+                today = datetime.now(timezone.utc).date()
+                params["expiration_date_gte"] = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+                params["expiration_date_lte"] = (today + timedelta(days=45)).strftime("%Y-%m-%d")
             if option_type:
                 params["type"] = option_type
+
+            # Narrow strikes around current price
+            try:
+                q = self.get_quote(symbol)
+                if q and q.mid > 0:
+                    params["strike_price_gte"] = f"{q.mid * 0.85:.2f}"
+                    params["strike_price_lte"] = f"{q.mid * 1.15:.2f}"
+            except Exception:
+                pass
 
             resp = requests.get(
                 f"{self.base_url}/v2/options/contracts",

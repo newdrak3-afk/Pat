@@ -875,7 +875,8 @@ class TelegramBot:
                 except (ValueError, TypeError):
                     continue
                 dte = (exp - now).days
-                if dte < 1 or dte > 30:
+                # Allow 0DTE — we want to buy SOMETHING for diagnostics
+                if dte < 0 or dte > 45:
                     skipped_dte += 1
                     continue
                 mid = (c.bid + c.ask) / 2
