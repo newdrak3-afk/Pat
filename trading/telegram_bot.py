@@ -1392,6 +1392,11 @@ class TelegramBot:
             "trade": "auto_trading_enabled",
             "trading": "auto_trading_enabled",
             "auto": "auto_trading_enabled",
+            "optscan": "options_scanning_enabled",
+            "optionscan": "options_scanning_enabled",
+            "opttrade": "options_trading_enabled",
+            "optiontrade": "options_trading_enabled",
+            "opt": "options_trading_enabled",
             "paper": "paper_trading",
             "demo": "demo_mode",
             "regime": "regime_detection_enabled",
@@ -1421,9 +1426,15 @@ class TelegramBot:
             # Show every toggle with its state
             lines = [
                 "<b>ALL TOGGLES</b>\n",
-                "<b>Core:</b>",
+                "<b>Forex:</b>",
                 f"  scan/scanning       {'ON' if t.scanning_enabled else 'OFF'}",
                 f"  trade/auto          {'ON' if t.auto_trading_enabled else 'OFF'}",
+                "",
+                "<b>Options:</b>",
+                f"  optscan             {'ON' if t.options_scanning_enabled else 'OFF'}",
+                f"  opttrade            {'ON' if t.options_trading_enabled else 'OFF'}",
+                "",
+                "<b>Mode:</b>",
                 f"  paper               {'ON' if t.paper_trading else 'OFF'}",
                 f"  demo                {'ON' if t.demo_mode else 'OFF'}",
                 "",
@@ -1480,8 +1491,19 @@ class TelegramBot:
             new = not current
 
         if self._settings.set(key, new):
-            state = "ON" if new else "OFF"
-            self._send(f"<b>{key}</b>: {state}")
+            # Verify the write by re-loading from disk
+            from trading.settings import Settings
+            fresh = Settings()
+            actual = getattr(fresh.toggles, key)
+            state = "ON" if actual else "OFF"
+            if bool(actual) == bool(new):
+                self._send(f"<b>{key}</b>: {state} (persisted)")
+            else:
+                self._send(
+                    f"<b>{key}</b>: WRITE FAILED\n"
+                    f"Requested: {'ON' if new else 'OFF'}\n"
+                    f"Disk says: {state}"
+                )
         else:
             self._send(f"Failed to set {key}")
 

@@ -44,17 +44,17 @@ class OptionsTrader:
     """
 
     def __init__(self, config: Optional[SystemConfig] = None):
+        from trading.settings import Settings
         self.config = config or SystemConfig()
         self.broker = AlpacaBroker()
         self.scanner = None
         self.db = TradeDB()
         self.notifier = TelegramNotifier(self.config)
+        self.settings = Settings()
 
         # Risk limits
         self.max_premium_per_trade = 1500.0
         self.max_open_positions = 5
-        self.auto_trading_enabled = True  # Toggle via Telegram
-        self.scanning_enabled = True      # Toggle via Telegram
 
         # Mode-specific exit rules
         self.exit_rules = {
@@ -86,6 +86,26 @@ class OptionsTrader:
             "swing_trades": 0,
         }
         self._load_state()
+
+    # ─── Settings-backed toggles (persist to settings.json) ───
+    @property
+    def scanning_enabled(self) -> bool:
+        # Always re-read from disk so Telegram /toggle takes effect immediately
+        from trading.settings import Settings
+        return bool(Settings().toggles.options_scanning_enabled)
+
+    @scanning_enabled.setter
+    def scanning_enabled(self, value: bool) -> None:
+        self.settings.set("options_scanning_enabled", bool(value))
+
+    @property
+    def auto_trading_enabled(self) -> bool:
+        from trading.settings import Settings
+        return bool(Settings().toggles.options_trading_enabled)
+
+    @auto_trading_enabled.setter
+    def auto_trading_enabled(self, value: bool) -> None:
+        self.settings.set("options_trading_enabled", bool(value))
 
     def _load_state(self):
         state_file = "trading/data/options_trader_state.json"

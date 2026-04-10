@@ -31,6 +31,10 @@ class FeatureToggles:
     auto_trading_enabled: bool = True      # Place orders on OANDA practice when scanning is on
     demo_mode: bool = True                 # True = OANDA practice, False = LIVE money
 
+    # ─── OPTIONS ───
+    options_scanning_enabled: bool = True  # Scan options chains (Alpaca)
+    options_trading_enabled: bool = True   # Place options orders on Alpaca paper
+
     # ─── NOTIFICATIONS ───
     telegram_alerts: bool = True           # Send Telegram messages
     telegram_trade_alerts: bool = True     # Alert on trades placed

@@ -2,6 +2,8 @@
   "scanning_enabled": true,
   "auto_trading_enabled": true,
   "demo_mode": true,
+  "options_scanning_enabled": true,
+  "options_trading_enabled": true,
   "telegram_alerts": true,
   "telegram_trade_alerts": true,
   "telegram_scan_alerts": true,
