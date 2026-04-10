@@ -210,6 +210,8 @@ class TelegramBot:
             "/optionrisk": self._cmd_optionrisk,
             "/forcetrade": self._cmd_forcetrade,
             "/heartbeat": self._cmd_heartbeat,
+            "/toggle": self._cmd_toggle,
+            "/guard": self._cmd_toggle,
         }
 
         handler = handlers.get(cmd)
@@ -260,6 +262,8 @@ class TelegramBot:
 
             "<b>━━━ RISK / GUARDS ━━━</b>\n"
             "/guards — All guard statuses\n"
+            "/toggle — List/flip any guard or feature\n"
+            "/toggle regime off — Turn a guard off\n"
             "/drawdown — Drawdown guard status\n"
             "/drawdown reset — Reset peak\n"
             "/drift — Drift detector\n"
@@ -1366,6 +1370,119 @@ class TelegramBot:
 
         lines.append(f"\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         self._send("\n".join(lines))
+
+    def _cmd_toggle(self, args):
+        """Toggle any guard/feature ON or OFF.
+
+        Usage:
+            /toggle                       — list all toggles + state
+            /toggle regime                — flip regime detection
+            /toggle drift off             — force OFF
+            /toggle portfolio on          — force ON
+        """
+        if not self._settings:
+            self._send("Settings not available")
+            return
+
+        # Short-name aliases → real setting keys
+        aliases = {
+            "scan": "scanning_enabled",
+            "scanning": "scanning_enabled",
+            "trade": "auto_trading_enabled",
+            "trading": "auto_trading_enabled",
+            "auto": "auto_trading_enabled",
+            "paper": "paper_trading",
+            "demo": "demo_mode",
+            "regime": "regime_detection_enabled",
+            "calib": "calibration_enabled",
+            "calibration": "calibration_enabled",
+            "drawdown": "drawdown_guard_enabled",
+            "dd": "drawdown_guard_enabled",
+            "drift": "drift_detector_enabled",
+            "portfolio": "portfolio_manager_enabled",
+            "port": "portfolio_manager_enabled",
+            "slippage": "slippage_model_enabled",
+            "slip": "slippage_model_enabled",
+            "quality": "data_quality_check",
+            "dq": "data_quality_check",
+            "research": "research_enabled",
+            "predict": "prediction_enabled",
+            "prediction": "prediction_enabled",
+            "alerts": "telegram_alerts",
+            "tradealerts": "telegram_trade_alerts",
+            "scanalerts": "telegram_scan_alerts",
+            "wl": "telegram_win_loss_alerts",
+        }
+
+        t = self._settings.toggles
+
+        if not args:
+            # Show every toggle with its state
+            lines = [
+                "<b>ALL TOGGLES</b>\n",
+                "<b>Core:</b>",
+                f"  scan/scanning       {'ON' if t.scanning_enabled else 'OFF'}",
+                f"  trade/auto          {'ON' if t.auto_trading_enabled else 'OFF'}",
+                f"  paper               {'ON' if t.paper_trading else 'OFF'}",
+                f"  demo                {'ON' if t.demo_mode else 'OFF'}",
+                "",
+                "<b>Guards:</b>",
+                f"  regime              {'ON' if t.regime_detection_enabled else 'OFF'}",
+                f"  calibration         {'ON' if t.calibration_enabled else 'OFF'}",
+                f"  drawdown/dd         {'ON' if t.drawdown_guard_enabled else 'OFF'}",
+                f"  drift               {'ON' if t.drift_detector_enabled else 'OFF'}",
+                f"  portfolio/port      {'ON' if t.portfolio_manager_enabled else 'OFF'}",
+                f"  slippage/slip       {'ON' if t.slippage_model_enabled else 'OFF'}",
+                f"  quality/dq          {'ON' if t.data_quality_check else 'OFF'}",
+                "",
+                "<b>Agents:</b>",
+                f"  research            {'ON' if t.research_enabled else 'OFF'}",
+                f"  prediction/predict  {'ON' if t.prediction_enabled else 'OFF'}",
+                "",
+                "<b>Alerts:</b>",
+                f"  alerts              {'ON' if t.telegram_alerts else 'OFF'}",
+                f"  tradealerts         {'ON' if t.telegram_trade_alerts else 'OFF'}",
+                f"  scanalerts          {'ON' if t.telegram_scan_alerts else 'OFF'}",
+                f"  wl                  {'ON' if t.telegram_win_loss_alerts else 'OFF'}",
+                "",
+                "<b>Usage:</b>",
+                "  /toggle regime          (flip)",
+                "  /toggle drift off       (force off)",
+                "  /toggle portfolio on    (force on)",
+            ]
+            self._send("\n".join(lines))
+            return
+
+        name = args[0].lower()
+        key = aliases.get(name, name)
+
+        if not hasattr(t, key):
+            self._send(
+                f"Unknown toggle: <b>{name}</b>\n\n"
+                f"Send /toggle for the full list."
+            )
+            return
+
+        current = getattr(t, key)
+
+        # Parse force on/off or flip
+        if len(args) > 1:
+            val = args[1].lower()
+            if val in ("on", "true", "yes", "1"):
+                new = True
+            elif val in ("off", "false", "no", "0"):
+                new = False
+            else:
+                self._send(f"Use: /toggle {name} on|off")
+                return
+        else:
+            new = not current
+
+        if self._settings.set(key, new):
+            state = "ON" if new else "OFF"
+            self._send(f"<b>{key}</b>: {state}")
+        else:
+            self._send(f"Failed to set {key}")
 
     def _cmd_heartbeat(self, args):
         """Toggle the periodic heartbeat on/off."""

@@ -57,8 +57,8 @@ class FeatureToggles:
 
     # ─── MODES ───
     backtest_mode: bool = False            # Run backtester instead of live
-    paper_trading: bool = True             # Log trades but don't execute
-    runtime_profile: str = "paper"         # dev | paper | practice | live
+    paper_trading: bool = False            # Log trades but don't execute (OFF — real OANDA practice orders)
+    runtime_profile: str = "practice"      # dev | paper | practice | live
 
 
 class Settings:
@@ -198,7 +198,7 @@ class Settings:
                 "runtime_profile": "dev",
             },
             "paper": {
-                "scanning_enabled": False,
+                "scanning_enabled": True,
                 "auto_trading_enabled": True,
                 "demo_mode": True,
                 "paper_trading": True,
@@ -217,12 +217,12 @@ class Settings:
                 "demo_mode": True,
                 "paper_trading": False,
                 "drawdown_guard_enabled": True,
-                "drift_detector_enabled": True,
-                "portfolio_manager_enabled": True,
-                "slippage_model_enabled": True,
-                "data_quality_check": True,
-                "regime_detection_enabled": True,
-                "calibration_enabled": True,
+                "drift_detector_enabled": False,
+                "portfolio_manager_enabled": False,
+                "slippage_model_enabled": False,
+                "data_quality_check": False,
+                "regime_detection_enabled": False,
+                "calibration_enabled": False,
                 "runtime_profile": "practice",
             },
             "live": {
