@@ -227,7 +227,7 @@ class PositionManager:
                     market_id=info["symbol"],
                     market_question=f"Forex: {info['symbol']}",
                     side=info["side"],
-                    amount=abs(pnl),
+                    amount=abs(units * entry),  # notional value, not the loss amount
                     entry_price=entry,
                     pnl=pnl,
                     outcome=outcome,

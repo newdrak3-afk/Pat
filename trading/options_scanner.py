@@ -90,11 +90,11 @@ class OptionsScanner:
     SWING: Looks for pullback continuation with strong HTF trend.
     """
 
-    def __init__(self, broker: AlpacaBroker, controlled_start: bool = True):
+    def __init__(self, broker: AlpacaBroker, controlled_start: bool = False):
         self.broker = broker
         self.contract_selector = ContractSelector()
         self.news = NewsReader()
-        # Controlled start: only scan SPY/QQQ until first successful trade
+        # controlled_start disabled — scan all tiers (SPY/QQQ/IWM + mega-cap + rest)
         self._controlled_start = controlled_start
         self._diagnostics: list[dict] = []
 
