@@ -899,10 +899,34 @@ class TelegramBot:
                         )
 
                         if not dry_run:
-                            # Register in the live options trader so exits are monitored
-                            self._options_trader._run_simple_strategy(
-                                symbols=[symbol], dry_run=False
-                            )
+                            # Register trade in options trader so exits are monitored
+                            from datetime import datetime, timezone
+                            order_id = result.get("order_id", f"tg_{symbol}_{int(datetime.now(timezone.utc).timestamp())}")
+                            direction = "buy" if option_type == "call" else "sell"
+                            self._options_trader.open_trades[order_id] = {
+                                "trade_id": order_id,
+                                "symbol": symbol,
+                                "option_symbol": contract_symbol,
+                                "option_type": option_type,
+                                "side": direction,
+                                "mode": "simple",
+                                "tier": 1,
+                                "strike": strike,
+                                "expiration": result.get("expiration", ""),
+                                "dte": dte,
+                                "entry_premium": prem,
+                                "max_loss": max_loss,
+                                "confidence": 0.50,
+                                "confidence_scores": {},
+                                "reasons": [f"simple: {symbol} SMA20 {direction}"],
+                                "reasoning": f"Manual /simpletrade: {symbol} SMA20 direction={direction}",
+                                "placed_at": datetime.now(timezone.utc).isoformat(),
+                                "entry_underlying": result.get("current_price", 0),
+                                "peak_premium": prem,
+                                "partial_taken": False,
+                            }
+                            self._options_trader._stats["total_trades"] += 1
+                            self._options_trader._save_state()
                         break
 
                     else:

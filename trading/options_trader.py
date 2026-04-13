@@ -72,6 +72,13 @@ class OptionsTrader:
                 "time_stop_hours": 24,    # Close if no move in 24 hours
                 "force_close_dte": 2,
             },
+            "simple": {
+                "tp_pct": 0.50,           # 50% profit target
+                "sl_pct": 0.50,           # 50% stop loss (options can move fast)
+                "partial_tp_pct": 0.25,
+                "time_stop_hours": 48,    # Give it 2 days
+                "force_close_dte": 1,
+            },
         }
 
         # State
