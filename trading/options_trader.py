@@ -245,13 +245,23 @@ class OptionsTrader:
         trades_blocked = 0
 
         if not signals:
-            # Send scan summary even with 0 signals
-            self.notifier.send_options_scan(
-                symbols_scanned=total_symbols,
-                signals_found=0,
-                trades_placed=0,
-                trades_blocked=0,
-            )
+            # ─── FALLBACK: simple directional strategy ───
+            # The full scanner depends on the Alpaca snapshots API (paid plan).
+            # When it produces nothing, try the simple strategy which only needs
+            # the contracts endpoint + close_price pricing.
+            if self.auto_trading_enabled and len(self.open_trades) < self.max_open_positions:
+                self.notifier.send_system_alert(
+                    f"OPTIONS: Full scanner found 0 signals (cycle #{self._stats['cycles']})\n"
+                    f"Trying simple directional strategy (SPY/QQQ/IWM)..."
+                )
+                self._run_simple_strategy()
+            else:
+                self.notifier.send_options_scan(
+                    symbols_scanned=total_symbols,
+                    signals_found=0,
+                    trades_placed=0,
+                    trades_blocked=0,
+                )
             return
 
         if not self.auto_trading_enabled:
@@ -387,6 +397,109 @@ class OptionsTrader:
             trades_blocked=trades_blocked,
         )
         self._save_state()
+
+    def _run_simple_strategy(self, symbols: list[str] = None, dry_run: bool = False):
+        """
+        Fallback: simple directional options trade when the full scanner fails.
+
+        Tries SPY → QQQ → IWM in order. Places one trade on the first symbol
+        where the contracts API succeeds and valid contracts exist.
+
+        This bypasses the snapshots API entirely — works on any Alpaca account
+        that has options trading enabled.
+        """
+        from trading.simple_options_strategy import SimpleOptionsStrategy
+
+        strat = SimpleOptionsStrategy(broker=self.broker, notifier=self.notifier)
+        targets = symbols or ["SPY", "QQQ", "IWM"]
+
+        lines = ["SIMPLE OPTIONS STRATEGY"]
+
+        for symbol in targets:
+            try:
+                direction, current_price, sma20 = strat.get_trend(symbol)
+                option_type = "call" if direction == "buy" else "put"
+                lines.append(
+                    f"\n{symbol}: ${current_price:.2f} vs SMA20 ${sma20:.2f} "
+                    f"→ {'↑ CALLS' if direction == 'buy' else '↓ PUTS'}"
+                )
+
+                result = strat.place_trade(symbol, direction, current_price, dry_run=dry_run)
+
+                if result["success"]:
+                    price = result.get("price", 0)
+                    max_loss = result.get("max_loss", 0)
+                    contract_symbol = result.get("contract_symbol", "?")
+                    dte = result.get("dte", 0)
+
+                    lines.append(
+                        f"✓ ORDER PLACED\n"
+                        f"  {contract_symbol}\n"
+                        f"  {option_type.upper()} ${result.get('strike', 0):.0f} "
+                        f"exp {result.get('expiration', '?')} ({dte} DTE)\n"
+                        f"  Price: ${price:.2f} | Max loss: ${max_loss:.0f}"
+                    )
+
+                    # Register trade in open_trades so exits are monitored
+                    order_id = result.get("order_id", f"simple_{symbol}_{int(datetime.now(timezone.utc).timestamp())}")
+                    self.open_trades[order_id] = {
+                        "trade_id": order_id,
+                        "symbol": symbol,
+                        "option_symbol": contract_symbol,
+                        "option_type": option_type,
+                        "side": direction,
+                        "mode": "simple",
+                        "tier": 1,
+                        "strike": result.get("strike", 0),
+                        "expiration": result.get("expiration", ""),
+                        "dte": dte,
+                        "entry_premium": price,
+                        "max_loss": max_loss,
+                        "confidence": 0.50,
+                        "confidence_scores": {},
+                        "reasons": [f"simple: {symbol} {'above' if direction == 'buy' else 'below'} SMA20"],
+                        "reasoning": f"Simple directional: {symbol} ${current_price:.2f} {'>' if direction == 'buy' else '<'} SMA20 ${sma20:.2f}",
+                        "placed_at": datetime.now(timezone.utc).isoformat(),
+                        "entry_underlying": current_price,
+                        "peak_premium": price,
+                        "partial_taken": False,
+                    }
+                    self._stats["total_trades"] += 1
+                    self._stats["swing_trades"] += 1
+
+                    self.db.save_trade(
+                        trade_id=order_id,
+                        symbol=f"{symbol}_{option_type.upper()}_{result.get('strike', 0)}",
+                        side=direction,
+                        units=1,
+                        entry_price=price,
+                        stop_loss=price * 0.60,
+                        take_profit=price * 1.50,
+                        confidence=0.50,
+                        reasoning=f"Simple strategy: {symbol} SMA20 {direction}",
+                    )
+
+                    self._save_state()
+                    self.notifier.send_system_alert("\n".join(lines))
+                    return  # Done — one trade is enough
+
+                else:
+                    lines.append(f"✗ {symbol} failed: {result['message']}")
+                    logger.warning(f"SIMPLE STRATEGY {symbol}: {result['message']}")
+
+            except Exception as e:
+                lines.append(f"✗ {symbol} error: {str(e)[:120]}")
+                logger.warning(f"SIMPLE STRATEGY exception on {symbol}: {e}", exc_info=True)
+
+        # All symbols failed
+        lines.append(
+            "\nAll symbols failed. Possible reasons:\n"
+            "1. Options trading not enabled on Alpaca paper account\n"
+            "   → alpaca.markets → Paper Trading → Account settings → enable options\n"
+            "2. Market is closed\n"
+            "3. No contracts available in 7-21 DTE range"
+        )
+        self.notifier.send_system_alert("\n".join(lines))
 
     def _check_positions(self):
         """Monitor open positions with dynamic exit logic."""

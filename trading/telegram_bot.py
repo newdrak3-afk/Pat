@@ -208,6 +208,7 @@ class TelegramBot:
             "/optiontrade": self._cmd_optiontrade,
             "/optionpositions": self._cmd_optionpositions,
             "/optionrisk": self._cmd_optionrisk,
+            "/simpletrade": self._cmd_simpletrade,
             "/forcetrade": self._cmd_forcetrade,
             "/heartbeat": self._cmd_heartbeat,
             "/toggle": self._cmd_toggle,
@@ -251,7 +252,9 @@ class TelegramBot:
             "/optiontrade [on|off] — Toggle auto-trading\n"
             "/optionpositions — Open options + P&L\n"
             "/optionrisk — View/adjust risk\n"
-            "/testoptions — Test Alpaca connection\n\n"
+            "/testoptions — Test Alpaca connection\n"
+            "/simpletrade — Force a directional options trade NOW\n"
+            "/simpletrade SPY --dry — Dry run (no real order)\n\n"
 
             "<b>━━━ SYSTEM ━━━</b>\n"
             "/status — Full bot status (forex + options)\n"
@@ -832,6 +835,95 @@ class TelegramBot:
         lines.append(f"Options trades: {self._options_trader._stats.get('total_trades', 0)}")
 
         self._send("\n".join(lines))
+
+    def _cmd_simpletrade(self, args):
+        """Force a simple directional options trade right now — bypasses the full scanner."""
+        if not self._options_trader:
+            self._send("Options trader not loaded. Is ALPACA_API_KEY set?")
+            return
+
+        broker = self._options_trader.broker
+        if not broker.connected:
+            if not broker.connect():
+                self._send("Alpaca connection failed — check ALPACA_API_KEY / ALPACA_SECRET_KEY.")
+                return
+
+        dry_run = "--dry" in args or "--dryrun" in args
+        symbol_override = None
+        for a in args:
+            if a.upper() in ("SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA"):
+                symbol_override = a.upper()
+                break
+
+        symbols = [symbol_override] if symbol_override else ["SPY", "QQQ", "IWM"]
+
+        self._send(
+            f"<b>SIMPLE OPTIONS TRADE</b>\n\n"
+            f"Symbols: {', '.join(symbols)}\n"
+            f"Mode: {'DRY RUN' if dry_run else 'LIVE ORDER'}\n\n"
+            f"Getting trend + contracts... (10-15s)"
+        )
+
+        try:
+            from trading.simple_options_strategy import SimpleOptionsStrategy
+            strat = SimpleOptionsStrategy(broker=broker)
+
+            lines = ["<b>SIMPLE TRADE RESULT</b>\n"]
+            placed = False
+
+            for symbol in symbols:
+                try:
+                    direction, price, sma20 = strat.get_trend(symbol)
+                    option_type = "call" if direction == "buy" else "put"
+                    lines.append(
+                        f"<b>{symbol}</b>: ${price:.2f} vs SMA20 ${sma20:.2f} "
+                        f"→ {'↑ CALLS' if direction == 'buy' else '↓ PUTS'}\n"
+                    )
+
+                    result = strat.place_trade(symbol, direction, price, dry_run=dry_run)
+
+                    if result["success"]:
+                        placed = True
+                        contract_symbol = result.get("contract_symbol", "?")
+                        prem = result.get("price", 0)
+                        max_loss = result.get("max_loss", 0)
+                        dte = result.get("dte", 0)
+                        strike = result.get("strike", 0)
+
+                        lines.append(
+                            f"✅ <b>{'WOULD ORDER' if dry_run else 'ORDER PLACED'}</b>\n"
+                            f"Contract: <code>{contract_symbol}</code>\n"
+                            f"Type: {option_type.upper()} ${strike:.0f}\n"
+                            f"Exp: {result.get('expiration', '?')} ({dte} DTE)\n"
+                            f"Price: ${prem:.2f} | Max loss: ${max_loss:.0f}\n"
+                        )
+
+                        if not dry_run:
+                            # Register in the live options trader so exits are monitored
+                            self._options_trader._run_simple_strategy(
+                                symbols=[symbol], dry_run=False
+                            )
+                        break
+
+                    else:
+                        lines.append(f"✗ {symbol}: {result['message']}\n")
+
+                except Exception as e:
+                    lines.append(f"✗ {symbol} error: {str(e)[:150]}\n")
+
+            if not placed:
+                lines.append(
+                    "❌ <b>All symbols failed.</b>\n\n"
+                    "Most likely cause: Options trading not enabled.\n"
+                    "Go to alpaca.markets → Paper Trading dashboard\n"
+                    "→ Account settings → Enable options trading\n"
+                    "Then send /simpletrade again."
+                )
+
+            self._send("\n".join(lines))
+
+        except Exception as e:
+            self._send(f"Simple trade error: {str(e)[:300]}")
 
     def _cmd_forcetrade(self, args):
         """Force a test options trade — buy 1 near-ATM SPY call, bypass all scanning."""
