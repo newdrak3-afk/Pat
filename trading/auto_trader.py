@@ -423,8 +423,20 @@ class AutoTrader:
                 logger.error(f"Cycle error: {e}", exc_info=True)
                 self.notifier.send_system_alert(f"Error: {str(e)[:200]}")
 
+            # Interruptible sleep: check settings every 5s so /pause takes
+            # effect quickly instead of waiting the full scan_interval.
             try:
-                time.sleep(scan_interval)
+                elapsed = 0
+                while elapsed < scan_interval:
+                    time.sleep(5)
+                    elapsed += 5
+                    # Re-read settings to pick up Telegram toggles immediately
+                    self.settings = Settings()
+                    self.telegram_bot._settings = self.settings
+                    self.guard_engine.settings = self.settings
+                    if not self.settings.toggles.scanning_enabled:
+                        logger.info("Scanning toggled OFF during sleep — stopping cycle wait")
+                        break
             except KeyboardInterrupt:
                 logger.info("Shutting down...")
                 self.telegram_bot.stop()

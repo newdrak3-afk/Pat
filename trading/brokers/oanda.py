@@ -136,7 +136,7 @@ def calc_units_from_risk(
         position_value_usd = raw_units * entry
     else:
         position_value_usd = raw_units * entry * fx_to_usd
-    max_position_value = balance * 1.0  # max 1x leverage
+    max_position_value = balance * 0.25  # max 0.25x leverage — prevent oversized notional
     if position_value_usd > max_position_value:
         old_units = raw_units
         if quote_ccy == "USD":

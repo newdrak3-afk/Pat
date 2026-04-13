@@ -27,8 +27,11 @@ TIER1_PAIRS = [
 ]
 
 # Minimum confidence thresholds by mode
-CONFIDENCE_THRESHOLD_DEMO = 0.45
-CONFIDENCE_THRESHOLD_LIVE = 0.55
+# Raised from 0.45 — previous threshold was too easy to reach and not predictive.
+# With the stricter MACD scoring (both positive+improving required), typical
+# setups score 0.55-0.65. Only take trades with strong multi-factor alignment.
+CONFIDENCE_THRESHOLD_DEMO = 0.62
+CONFIDENCE_THRESHOLD_LIVE = 0.70
 
 
 def is_forex_market_open(now: datetime = None) -> bool:

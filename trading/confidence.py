@@ -156,14 +156,26 @@ def compute_confidence(x: ConfidenceInputs) -> ConfidenceResult:
     score += min(0.20, location)
 
     # 3. Momentum confirmation (0..0.20)
+    # Require BOTH conditions for full score — prevents every trending market
+    # from trivially scoring 0.20 just because MACD is positive.
+    # Full (0.20): histogram is positive AND improving (strong momentum alignment)
+    # Partial (0.08): only one condition met (weak confirmation)
     momentum = 0.0
     hist_delta = x.macd_hist_h1 - x.macd_hist_prev_h1
-    if x.direction == "buy" and (x.macd_hist_h1 > 0 or hist_delta > 0):
-        momentum += 0.20
-        reasons.append("momentum: MACD improving")
-    if x.direction == "sell" and (x.macd_hist_h1 < 0 or hist_delta < 0):
-        momentum += 0.20
-        reasons.append("momentum: MACD worsening")
+    if x.direction == "buy":
+        if x.macd_hist_h1 > 0 and hist_delta > 0:
+            momentum += 0.20
+            reasons.append("momentum: MACD positive+improving")
+        elif x.macd_hist_h1 > 0 or hist_delta > 0:
+            momentum += 0.08
+            reasons.append("momentum: MACD weakly confirmed")
+    if x.direction == "sell":
+        if x.macd_hist_h1 < 0 and hist_delta < 0:
+            momentum += 0.20
+            reasons.append("momentum: MACD negative+worsening")
+        elif x.macd_hist_h1 < 0 or hist_delta < 0:
+            momentum += 0.08
+            reasons.append("momentum: MACD weakly confirmed")
     score += min(0.20, momentum)
 
     # 4. Trend strength (0..0.20)

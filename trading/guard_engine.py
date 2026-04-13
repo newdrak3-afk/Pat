@@ -243,18 +243,19 @@ class GuardEngine:
         # Uses OANDA instrument spec for pip size, min/max units, precision.
         # Computes loss-per-unit in account currency, not raw price distance.
 
-        # Base risk: 0.5% per trade
-        risk_pct = 0.005
+        # Base risk: 0.2% per trade (reduced from 0.5% — account lost $9k on 0.5%)
+        # At 0.2%, max loss per trade is ~$184 on a $91k account instead of ~$460.
+        risk_pct = 0.002
 
-        # Dynamic adjustment: reduce risk after losing streaks
+        # Dynamic adjustment: reduce risk further after losing streaks
         if self.db:
             try:
                 recent = self.db.get_all_trades(limit=20) or []
-                if len(recent) >= 5:
+                if len(recent) >= 3:
                     wins = sum(1 for t in recent if t.get("outcome") == "win")
                     win_rate = wins / len(recent)
 
-                    # Check for consecutive losses
+                    # Check for consecutive losses (most recent first)
                     consec_losses = 0
                     for t in recent:
                         if t.get("outcome") == "loss":
@@ -262,23 +263,23 @@ class GuardEngine:
                         else:
                             break
 
-                    if consec_losses >= 5:
+                    if consec_losses >= 3:
                         risk_pct = 0.001  # 0.1% — heavy drawdown protection
-                        approval.reasons.append(f"Sizing: 5+ consec losses → 0.1% risk")
-                    elif consec_losses >= 3:
-                        risk_pct = 0.002  # 0.2%
-                        approval.reasons.append(f"Sizing: {consec_losses} consec losses → 0.2% risk")
+                        approval.reasons.append(f"Sizing: {consec_losses} consec losses → 0.1% risk")
+                    elif consec_losses >= 2:
+                        risk_pct = 0.0015  # 0.15%
+                        approval.reasons.append(f"Sizing: {consec_losses} consec losses → 0.15% risk")
                     elif win_rate < 0.35:
-                        risk_pct = 0.002  # 0.2% — poor win rate
-                        approval.reasons.append(f"Sizing: {win_rate:.0%} win rate → 0.2% risk")
+                        risk_pct = 0.001  # 0.1% — poor win rate
+                        approval.reasons.append(f"Sizing: {win_rate:.0%} win rate → 0.1% risk")
                     elif win_rate < 0.45:
-                        risk_pct = 0.003  # 0.3%
-                    elif win_rate > 0.60:
-                        risk_pct = 0.006  # 0.6% — performing well, slight increase
+                        risk_pct = 0.0015  # 0.15%
+                    elif win_rate > 0.65:
+                        risk_pct = 0.003  # 0.3% — only increase if clearly winning
 
                     logger.info(
                         f"DYNAMIC SIZING: win_rate={win_rate:.0%} "
-                        f"consec_losses={consec_losses} → risk={risk_pct:.1%}"
+                        f"consec_losses={consec_losses} → risk={risk_pct:.2%}"
                     )
             except Exception as e:
                 logger.debug(f"Dynamic sizing check failed: {e}")
