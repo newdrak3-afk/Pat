@@ -773,13 +773,59 @@ class TelegramBot:
         else:
             lines.append("\nSPY quote: FAILED")
 
-        # 6. Test options chain
+        # 6. Test options chain — also show raw API error for diagnosis
+        import requests as _req
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        self._send("Testing options chain... (this may take 10-15s)")
         chain = broker.get_options_chain("SPY")
         if chain:
             with_quotes = sum(1 for c in chain if c.bid > 0)
             lines.append(f"SPY options chain: {len(chain)} contracts, {with_quotes} with live quotes")
         else:
             lines.append("SPY options chain: EMPTY or FAILED")
+            # Direct API probe to get the actual error message
+            try:
+                today = _dt.now(_tz.utc).date()
+                probe_params = {
+                    "feed": "indicative",
+                    "limit": 10,
+                    "expiration_date_gte": (today + _td(days=1)).strftime("%Y-%m-%d"),
+                    "expiration_date_lte": (today + _td(days=30)).strftime("%Y-%m-%d"),
+                }
+                probe_resp = _req.get(
+                    f"{broker.data_url}/v1beta1/options/snapshots/SPY",
+                    headers=broker._headers,
+                    params=probe_params,
+                    timeout=15,
+                )
+                lines.append(f"\nRaw snapshots API: {probe_resp.status_code}")
+                if not probe_resp.ok:
+                    lines.append(f"Error: {probe_resp.text[:400]}")
+                else:
+                    data = probe_resp.json()
+                    count = len(data.get("snapshots", {}))
+                    lines.append(f"Snapshots returned: {count} (feed=indicative)")
+
+                # Also test contracts endpoint
+                contracts_resp = _req.get(
+                    f"{broker.base_url}/v2/options/contracts",
+                    headers=broker._headers,
+                    params={"underlying_symbols": "SPY", "limit": 5, "status": "active",
+                            "expiration_date_gte": (today + _td(days=1)).strftime("%Y-%m-%d"),
+                            "expiration_date_lte": (today + _td(days=30)).strftime("%Y-%m-%d")},
+                    timeout=10,
+                )
+                lines.append(f"\nContracts API: {contracts_resp.status_code}")
+                if not contracts_resp.ok:
+                    lines.append(f"Error: {contracts_resp.text[:200]}")
+                else:
+                    contracts_data = contracts_resp.json()
+                    c_count = len(contracts_data.get("option_contracts", []))
+                    lines.append(f"Contracts returned: {c_count}")
+                    if c_count > 0:
+                        lines.append("Contracts endpoint WORKS — quotes may be the issue")
+            except Exception as e:
+                lines.append(f"Probe error: {e}")
 
         # 7. Cycles
         lines.append(f"\nOptions cycles run: {self._options_trader._stats.get('cycles', 0)}")

@@ -320,7 +320,7 @@ class AlpacaBroker(BaseBroker):
                     timeout=15,
                 )
                 if not resp.ok:
-                    logger.debug(
+                    logger.warning(
                         f"Snapshots endpoint failed for {symbol}: "
                         f"{resp.status_code} {resp.text[:200]}"
                     )
@@ -338,7 +338,7 @@ class AlpacaBroker(BaseBroker):
                     break
 
             if not all_snapshots:
-                logger.debug(f"Snapshots empty for {symbol}")
+                logger.warning(f"Snapshots empty for {symbol} — options data may require paid Alpaca plan")
                 return []
 
             options = []
