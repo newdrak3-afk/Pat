@@ -902,13 +902,14 @@ class TelegramBot:
                             # Register trade in options trader so exits are monitored
                             from datetime import datetime, timezone
                             order_id = result.get("order_id", f"tg_{symbol}_{int(datetime.now(timezone.utc).timestamp())}")
-                            direction = "buy" if option_type == "call" else "sell"
+                            # Always "buy" — we only ever BUY calls or puts, never write/sell
+                            trend_dir = result.get("direction", "buy")
                             self._options_trader.open_trades[order_id] = {
                                 "trade_id": order_id,
                                 "symbol": symbol,
                                 "option_symbol": contract_symbol,
                                 "option_type": option_type,
-                                "side": direction,
+                                "side": "buy",
                                 "mode": "simple",
                                 "tier": 1,
                                 "strike": strike,
@@ -918,8 +919,8 @@ class TelegramBot:
                                 "max_loss": max_loss,
                                 "confidence": 0.50,
                                 "confidence_scores": {},
-                                "reasons": [f"simple: {symbol} SMA20 {direction}"],
-                                "reasoning": f"Manual /simpletrade: {symbol} SMA20 direction={direction}",
+                                "reasons": [f"simple: {symbol} SMA20 → {option_type}"],
+                                "reasoning": f"Manual /simpletrade: {symbol} {'above' if trend_dir == 'buy' else 'below'} SMA20 → {option_type}",
                                 "placed_at": datetime.now(timezone.utc).isoformat(),
                                 "entry_underlying": result.get("current_price", 0),
                                 "peak_premium": prem,

@@ -83,7 +83,19 @@ class AlpacaBroker(BaseBroker):
                 self._account = resp.json()
                 self.connected = True
                 status = self._account.get("status", "unknown")
-                logger.info(f"Alpaca connected — Status: {status}")
+                opts_level = self._account.get("options_approved_level", 0)
+                buying_power = float(self._account.get("buying_power", 0) or 0)
+                logger.info(
+                    f"Alpaca connected — Status: {status} | "
+                    f"Options level: {opts_level} | "
+                    f"Buying power: ${buying_power:,.2f}"
+                )
+                if opts_level == 0:
+                    logger.warning(
+                        "OPTIONS TRADING NOT ENABLED on this Alpaca account. "
+                        "Go to alpaca.markets → Paper Trading → Account → "
+                        "Options Trading to enable Level 1 or 2."
+                    )
                 return True
             else:
                 logger.error(f"Alpaca auth failed: {resp.status_code} {resp.text}")
@@ -606,7 +618,7 @@ class AlpacaBroker(BaseBroker):
         }
 
         if order_type == "limit" and limit_price > 0:
-            order_data["limit_price"] = str(limit_price)
+            order_data["limit_price"] = str(round(float(limit_price), 2))
 
         try:
             resp = requests.post(

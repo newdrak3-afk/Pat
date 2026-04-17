@@ -315,7 +315,7 @@ class SimpleOptionsStrategy:
                 "side": "buy",
                 "type": "limit",
                 "time_in_force": "day",
-                "limit_price": str(limit_price),
+                "limit_price": str(round(float(limit_price), 2)),
             },
             timeout=15,
         )
